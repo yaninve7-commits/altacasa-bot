@@ -167,7 +167,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"[{user.id}] {name}: {text}")
 
     # Получаем/создаём клиента в Notion
-    page_id = get_or_create_client(user.id, name, user.username or "")
+    page_id = None
+    try:
+        page_id = get_or_create_client(user.id, name, user.username or "")
+    except Exception as e:
+        logger.error(f"Notion get_or_create error: {e}")
 
     # Показываем "печатает..."
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
@@ -176,22 +180,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = ask_claude(user.id, text)
 
     # Обновляем Notion (не блокируем ответ если Notion недоступен)
-    try:
-        history = dialogs.get(user.id, [])
-        dialog_text = "\n".join(
-            f"{'👤' if m['role']=='user' else '🤖'} {m['content']}"
-            for m in history[-10:]
-        )
-        update_client(
-            page_id=page_id,
-            dialog_text=dialog_text,
-            qualification=result["qualification"],
-            interest=result["interest"],
-            budget=result["budget"],
-            escalate=result["escalate"],
-        )
-    except Exception as e:
-        logger.error(f"Notion update error: {e}")
+    if page_id:
+        try:
+            history = dialogs.get(user.id, [])
+            dialog_text = "\n".join(
+                f"{'👤' if m['role']=='user' else '🤖'} {m['content']}"
+                for m in history[-10:]
+            )
+            update_client(
+                page_id=page_id,
+                dialog_text=dialog_text,
+                qualification=result["qualification"],
+                interest=result["interest"],
+                budget=result["budget"],
+                escalate=result["escalate"],
+            )
+        except Exception as e:
+            logger.error(f"Notion update error: {e}")
 
     # Если нужна эскалация — уведомить менеджера
     if result["escalate"] and MANAGER_CHAT_ID:
