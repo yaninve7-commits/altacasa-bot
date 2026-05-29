@@ -55,18 +55,20 @@ def get_or_create_client(tg_id: int, name: str, username: str) -> str:
         return results["results"][0]["id"]
 
     # Создаём нового
-    tg_url = f"https://t.me/{username}" if username else ""
+    tg_url = f"https://t.me/{username}" if username else None
+    props = {
+        "Name":        {"title": [{"text": {"content": name}}]},
+        "Telegram ID": {"number": tg_id},
+        "Канал":       {"select": {"name": "Telegram"}},
+        "Квалификация":{"select": {"name": "Холодный"}},
+        "Язык":        {"select": {"name": "RU"}},
+        "Дата":        {"date": {"start": datetime.utcnow().date().isoformat()}},
+    }
+    if tg_url:
+        props["Telegram"] = {"url": tg_url}
     page = notion.pages.create(
         parent={"database_id": NOTION_DB_ID},
-        properties={
-            "Name":        {"title": [{"text": {"content": name}}]},
-            "Telegram ID": {"number": tg_id},
-            "Telegram":    {"url": tg_url} if tg_url else {"url": None},
-            "Канал":       {"select": {"name": "Telegram"}},
-            "Квалификация":{"select": {"name": "Холодный"}},
-            "Язык":        {"select": {"name": "RU"}},
-            "Дата":        {"date": {"start": datetime.utcnow().date().isoformat()}},
-        }
+        properties=props
     )
     logger.info(f"Новый клиент создан: {name} ({tg_id})")
     return page["id"]
@@ -143,7 +145,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = user.full_name or "Клиент"
     dialogs[user.id] = []  # сбрасываем историю
 
-    page_id = get_or_create_client(user.id, name, user.username or "")
+    try:
+        page_id = get_or_create_client(user.id, name, user.username or "")
+        update_client(page_id, f"[START] {datetime.now():%Y-%m-%d %H:%M}")
+    except Exception as e:
+        logger.error(f"Notion error in /start: {e}")
 
     welcome = (
         f"Добро пожаловать в *ALTA CASA* 🏠\n\n"
@@ -151,7 +157,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Расскажите, что вас интересует: диваны, кресла, столики, спальня, офис или комплектация объекта?"
     )
     await update.message.reply_text(welcome, parse_mode="Markdown")
-    update_client(page_id, f"[START] {datetime.now():%Y-%m-%d %H:%M}")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -170,22 +175,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Спрашиваем AI
     result = ask_claude(user.id, text)
 
-    # Формируем текст диалога для Notion
-    history = dialogs.get(user.id, [])
-    dialog_text = "\n".join(
-        f"{'👤' if m['role']=='user' else '🤖'} {m['content']}"
-        for m in history[-10:]
-    )
-
-    # Обновляем Notion
-    update_client(
-        page_id=page_id,
-        dialog_text=dialog_text,
-        qualification=result["qualification"],
-        interest=result["interest"],
-        budget=result["budget"],
-        escalate=result["escalate"],
-    )
+    # Обновляем Notion (не блокируем ответ если Notion недоступен)
+    try:
+        history = dialogs.get(user.id, [])
+        dialog_text = "\n".join(
+            f"{'👤' if m['role']=='user' else '🤖'} {m['content']}"
+            for m in history[-10:]
+        )
+        update_client(
+            page_id=page_id,
+            dialog_text=dialog_text,
+            qualification=result["qualification"],
+            interest=result["interest"],
+            budget=result["budget"],
+            escalate=result["escalate"],
+        )
+    except Exception as e:
+        logger.error(f"Notion update error: {e}")
 
     # Если нужна эскалация — уведомить менеджера
     if result["escalate"] and MANAGER_CHAT_ID:
