@@ -153,7 +153,7 @@ def update_client(page_id: str, dialog_text: str, qualification: str = None,
 
 # ── AI логика ─────────────────────────────────────────────────────────────────
 
-def ask_claude(chat_id: int, user_message: str, image_data: dict = None) -> dict:
+def ask_claude(chat_id: int, user_message: str, image_data: dict = None, extra_system: str = "") -> dict:
     history = dialogs.get(chat_id, [])
 
     if image_data:
@@ -176,7 +176,7 @@ def ask_claude(chat_id: int, user_message: str, image_data: dict = None) -> dict
     response = ai.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=1024,
-        system=get_system_prompt(),
+        system=get_system_prompt() + extra_system,
         messages=api_history
     )
 
@@ -211,24 +211,180 @@ async def download_photo(bot, file_id: str) -> dict:
     return {"data": data, "media_type": "image/jpeg"}
 
 
+# ── Каталог товаров (для deep links с сайта) ─────────────────────────────────
+PRODUCTS = {
+    # Диваны
+    "mc_a68": {
+        "name": "Диван MC-A68",
+        "desc": "Итальянская натуральная кожа oil-wax, гусиный пух, лиственница. 3-местный 230×97×92 см.",
+        "price": "от 235 224 ₽",
+        "срок": "6–8 недель",
+        "moq": "1 шт",
+    },
+    "fort": {
+        "name": "Диван FORT",
+        "desc": "Орех/ясень + велюр, высокоплотный поролон. 2–4 местный.",
+        "price": "от 99 634 ₽",
+        "срок": "6–8 недель",
+        "moq": "1 шт",
+    },
+    "pr701": {
+        "name": "Диван PR701 «Облако»",
+        "desc": "Модульный. Хлопок-лён, гусиный пух, лиственница. 3–4 места + пуф.",
+        "price": "от 219 109 ₽",
+        "срок": "6–8 недель",
+        "moq": "1 шт",
+    },
+    "mk_sofa01": {
+        "name": "Диван MK-SOFA01",
+        "desc": "Анилиновая/замшевая кожа, орех, лиственница. 2–3 места.",
+        "price": "от 272 833 ₽",
+        "срок": "6–8 недель",
+        "moq": "1 шт",
+    },
+    "qmw2023": {
+        "name": "Диван QMW-2023",
+        "desc": "Итальянская натуральная кожа, нержавеющая сталь. 1–4 места.",
+        "price": "от 59 895 ₽",
+        "срок": "6–8 недель",
+        "moq": "1 шт",
+    },
+    # Кресла
+    "lanyue": {
+        "name": "Кресло «Ланьюэ» ZX-LY3",
+        "desc": "Сев.-американский орех, хлопок-лён, поролон + холлофайбер. 64×102×74 см.",
+        "price": "118 921 ₽",
+        "срок": "4–6 недель",
+        "moq": "1 шт",
+    },
+    "mercer": {
+        "name": "Кресло MERCER",
+        "desc": "Орех/ясень, премиальный хлопок-лён, высокоплотный поролон. 70×96×95 см.",
+        "price": "от 127 490 ₽",
+        "срок": "4–6 недель",
+        "moq": "1 шт",
+    },
+    "florence": {
+        "name": "Кресло Lounge Florence",
+        "desc": "Кожа full-grain, каркас из орехового дерева. Стиль mid-century modern.",
+        "price": "от 47 500 ₽",
+        "срок": "4–6 недель",
+        "moq": "2 шт",
+    },
+    # Кровати
+    "roma": {
+        "name": "Кровать Roma Platform",
+        "desc": "Массив дуба, мягкое изголовье, подъёмный механизм. Размеры 160/180/200.",
+        "price": "от 62 000 ₽",
+        "срок": "5–7 недель",
+        "moq": "1 шт",
+    },
+    # Столики
+    "cj106": {
+        "name": "Журнальный столик MK-CJ106",
+        "desc": "Массив сев.-американского ореха. 135×75×36 см.",
+        "price": "98 593 ₽",
+        "срок": "4–6 недель",
+        "moq": "1 шт",
+    },
+    "palazzo": {
+        "name": "Обеденный стол Palazzo",
+        "desc": "Столешница из итальянского мрамора Calacatta, нержавеющая сталь. Ø120/140/160 см.",
+        "price": "от 118 000 ₽",
+        "срок": "7–10 недель",
+        "moq": "2 шт",
+    },
+    # Офис
+    "executive": {
+        "name": "Стол переговорный Executive",
+        "desc": "Шпон американского ореха, хром. 3.6–6.0 м. Встроенные кабель-каналы.",
+        "price": "от 210 000 ₽",
+        "срок": "6–8 недель",
+        "moq": "1 шт",
+    },
+    "cabinet_pro": {
+        "name": "Гардеробная система Cabinet Pro",
+        "desc": "Матовый лак + натуральный шпон, алюминиевые профили. Под размер помещения.",
+        "price": "от 94 000 ₽",
+        "срок": "6–8 недель",
+        "moq": "кастом",
+    },
+    # Отель
+    "grand_hotel": {
+        "name": "Ресепшн-стойка Grand Hotel",
+        "desc": "Натуральный травертин/мрамор + кварц. Подсветка в базе. Полностью под размер лобби.",
+        "price": "от 157 200 ₽",
+        "срок": "8–12 недель",
+        "moq": "кастом",
+    },
+    "chateau": {
+        "name": "Банкетный стул Chateau",
+        "desc": "Бук + ткань/кожа. Штабелируемый. 50+ расцветок. Сертификат EN 16139.",
+        "price": "от 4 200 ₽/шт",
+        "срок": "4–6 недель",
+        "moq": "50 шт",
+    },
+    "milano": {
+        "name": "Прикроватная тумба Milano",
+        "desc": "Лакированный МДФ 18 цветов, латунь матовая/глянец. Выдвижной ящик на доводчике.",
+        "price": "от 18 400 ₽",
+        "срок": "4–6 недель",
+        "moq": "4 шт",
+    },
+}
+
+def get_product_context(product_key: str) -> str:
+    """Вернуть текст с описанием товара для системного промпта."""
+    p = PRODUCTS.get(product_key.lower().replace("-", "_").replace(" ", "_"))
+    if not p:
+        return ""
+    return (
+        f"\n\n═══════════════════════════════\n"
+        f"КЛИЕНТ ПРИШЁЛ С КАРТОЧКИ ТОВАРА\n"
+        f"═══════════════════════════════\n"
+        f"Товар: {p['name']}\n"
+        f"Описание: {p['desc']}\n"
+        f"Цена: {p['price']}\n"
+        f"Срок производства: {p['срок']}\n"
+        f"Минимальный заказ: {p['moq']}\n\n"
+        f"Начни с приветствия и сразу упомяни этот товар по имени. "
+        f"Спроси что именно клиент хочет уточнить."
+    )
+
+
 # ── Telegram handlers ─────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     dialogs[user.id] = []
 
+    # Читаем параметр deep link (product key)
+    product_key = context.args[0] if context.args else None
+    product_ctx = get_product_context(product_key) if product_key else ""
+
     try:
         page_id = get_or_create_client(user.id, user.full_name or "Клиент", user.username or "")
-        update_client(page_id, f"[START] {datetime.now():%Y-%m-%d %H:%M}")
+        label = f"[START:{product_key}]" if product_key else "[START]"
+        update_client(page_id, f"{label} {datetime.now():%Y-%m-%d %H:%M}")
     except Exception as e:
         logger.error(f"Notion /start error: {e}")
 
-    await update.message.reply_text(
-        "Добро пожаловать в *ALTA CASA* 🏠\n\n"
-        "Мы поставляем премиальную мебель из Китая — прямо с фабрик Фошаня и Гуанчжоу.\n\n"
-        "Расскажите, что вас интересует: диваны, кресла, столики, спальня, офис или комплектация объекта?",
-        parse_mode="Markdown"
-    )
+    if product_ctx:
+        # Есть контекст товара — просим Claude написать персонализированное приветствие
+        result = ask_claude(
+            user.id,
+            f"[СИСТЕМА: клиент перешёл с карточки товара. Поприветствуй и задай первый вопрос.]{product_ctx}",
+            extra_system=product_ctx
+        )
+        await update.message.reply_text(result["reply"])
+    else:
+        await update.message.reply_text(
+            "Здравствуйте! Меня зовут Юля.\n\n"
+            "Я помогу вам подобрать качественную мебель из Китая, "
+            "рассчитать стоимость и подобрать оптимальный вариант доставки.\n\n"
+            "Подскажите, пожалуйста, какую мебель вы рассматриваете: "
+            "для дома, офиса, ресторана, отеля или другого проекта?"
+        )
 
 
 async def cmd_teach(update: Update, context: ContextTypes.DEFAULT_TYPE):
