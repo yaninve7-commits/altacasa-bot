@@ -407,11 +407,10 @@ async def cmd_ai_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     post_text = response.content[0].text.strip()
 
-    # Сначала показываем превью владельцу
+    # Сначала показываем превью владельцу (без parse_mode чтобы не сломать)
     await update.message.reply_text(
-        f"📝 *Превью поста:*\n\n{post_text}\n\n"
-        f"Отправь `/confirm` чтобы опубликовать, или отредактируй через `/post <текст>`",
-        parse_mode="Markdown"
+        f"📝 Превью поста:\n\n{post_text}\n\n"
+        f"Отправь /confirm чтобы опубликовать, или /post <текст> чтобы изменить"
     )
     # Сохраняем в контекст для подтверждения
     context.user_data["pending_post"] = post_text
