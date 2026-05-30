@@ -403,16 +403,28 @@ async def _send_and_update(update, context, user, page_id, result, original_text
     # Уведомить менеджера при эскалации
     if result["escalate"] and MANAGER_CHAT_ID:
         try:
+            # Собираем историю диалога для контекста
+            history = dialogs.get(user.id, [])
+            dialog_summary = "\n".join(
+                f"{'👤' if m['role'] == 'user' else '🤖'} {m['content'][:150] if isinstance(m['content'], str) else '[медиа]'}"
+                for m in history[-6:]
+            )
+            interest = result.get("interest") or "не указан"
+            budget = f"{int(result['budget']):,} ₽".replace(",", " ") if result.get("budget") else "не указан"
+            qualification = result.get("qualification") or "Горячий"
+
+            msg = (
+                f"🔥 Горячий лид!\n\n"
+                f"👤 Клиент: {user.full_name}\n"
+                f"📱 TG: @{user.username or 'нет'} | ID: {user.id}\n"
+                f"🛋 Интерес: {interest}\n"
+                f"💰 Бюджет: {budget}\n"
+                f"📊 Статус: {qualification}\n\n"
+                f"💬 Диалог:\n{dialog_summary}"
+            )
             await context.bot.send_message(
                 chat_id=int(MANAGER_CHAT_ID),
-                text=(
-                    f"🔥 *Горячий лид!*\n"
-                    f"Клиент: {user.full_name}\n"
-                    f"TG: @{user.username or 'нет'} | ID: {user.id}\n"
-                    f"Сообщение: _{original_text[:200]}_\n\n"
-                    f"[Открыть Notion](https://www.notion.so/{(page_id or '').replace('-','')})"
-                ),
-                parse_mode="Markdown"
+                text=msg
             )
         except Exception as e:
             logger.error(f"Escalation notify error: {e}")
