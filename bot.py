@@ -230,6 +230,37 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Диалог сброшен.")
 
 
+def detect_owner_intent(text: str) -> str | None:
+    """Определить намерение владельца из свободного текста. Вернуть тип или None."""
+    t = text.lower().strip()
+
+    # Намерение: написать и опубликовать пост
+    post_triggers = [
+        "напиши пост", "сделай пост", "опубликуй пост", "запости", "пост про",
+        "пост о ", "напиши о ", "напиши про ", "сделай анонс", "напиши анонс",
+        "сделай объявление", "опубликуй:", "опубликуй текст", "написать пост",
+        "создай пост", "новый пост"
+    ]
+    if any(t.startswith(tr) or tr in t for tr in post_triggers):
+        return "post"
+
+    # Намерение: опубликовать готовый текст напрямую
+    direct_triggers = ["опубликуй: ", "в канал: ", "пост: "]
+    if any(t.startswith(tr) for tr in direct_triggers):
+        return "direct_post"
+
+    # Намерение: обучить бота
+    teach_triggers = [
+        "запомни:", "запомни,", "запомни что", "добавь в базу", "обучи",
+        "юля должна знать", "юля отвечает", "если спросят про",
+        "ответ на вопрос", "фaq:", "вопрос:", "скажи клиентам"
+    ]
+    if any(t.startswith(tr) or tr in t for tr in teach_triggers):
+        return "teach"
+
+    return None
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = update.message.text
@@ -237,6 +268,69 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"[{user.id}] {name}: {text}")
 
+    # ── Владелец: распознаём намерение без команд ──────────────────────────────
+    if is_owner(user):
+        intent = detect_owner_intent(text)
+
+        if intent == "post":
+            # Генерируем пост через AI и публикуем
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+            prompt = f"""Напиши продающий пост для Telegram-канала ALTA CASA.
+Тема: {text}
+Требования: 3-4 абзаца, живой стиль, цены если знаешь, в конце призыв писать @altacasacn_bot.
+2-3 emoji уместно. Форматирование Markdown. Без хэштегов.
+Верни ТОЛЬКО текст поста."""
+            response = ai.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=600,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            post_text = response.content[0].text.strip()
+            context.user_data["pending_post"] = post_text
+            await update.message.reply_text(
+                f"📝 Превью поста:\n\n{post_text}\n\n"
+                f"Напиши 'публикуй' или /confirm чтобы опубликовать в канал."
+            )
+            return
+
+        if intent == "direct_post":
+            # Публикуем текст напрямую
+            for prefix in ["опубликуй: ", "в канал: ", "пост: "]:
+                if text.lower().startswith(prefix):
+                    post_text = text[len(prefix):]
+                    break
+            else:
+                post_text = text
+            try:
+                await context.bot.send_message(chat_id=CHANNEL_ID, text=post_text)
+                await update.message.reply_text("✅ Опубликовано в канале!")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Ошибка: {e}")
+            return
+
+        if intent == "teach":
+            entry = f"[{datetime.now():%d.%m.%Y}] {text}"
+            save_knowledge(entry)
+            await update.message.reply_text(f"✅ Запомнила:\n\n{text[:200]}")
+            return
+
+        # Владелец написал "публикуй" — подтверждение pending поста
+        if text.lower().strip() in ["публикуй", "подтверди", "ок публикуй", "да публикуй", "публикуй!"]:
+            post_text = context.user_data.get("pending_post")
+            if post_text:
+                try:
+                    await context.bot.send_message(chat_id=CHANNEL_ID, text=post_text, parse_mode="Markdown")
+                    context.user_data.pop("pending_post", None)
+                    await update.message.reply_text("✅ Пост опубликован в канале!")
+                except Exception:
+                    await context.bot.send_message(chat_id=CHANNEL_ID, text=post_text)
+                    context.user_data.pop("pending_post", None)
+                    await update.message.reply_text("✅ Пост опубликован!")
+            else:
+                await update.message.reply_text("Нет поста для публикации. Сначала попроси написать пост.")
+            return
+
+    # ── Обычный клиент ─────────────────────────────────────────────────────────
     page_id = None
     try:
         page_id = get_or_create_client(user.id, name, user.username or "")
