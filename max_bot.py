@@ -41,7 +41,15 @@ dp  = Dispatcher()
 
 # ── Системный промпт ──────────────────────────────────────────────────────────
 with open("system_prompt.txt", "r", encoding="utf-8") as f:
-    BASE_PROMPT = f.read()
+    _full_prompt = f.read()
+    # Для MAX убираем JSON-секцию — только живой текст
+    if "ФОРМАТ ОТВЕТА" in _full_prompt:
+        BASE_PROMPT = _full_prompt.split("═══════════════════════════════\nФОРМАТ ОТВЕТА")[0].strip()
+    else:
+        BASE_PROMPT = _full_prompt
+
+# Добавляем инструкцию для MAX — только текст, без JSON
+BASE_PROMPT += "\n\nВАЖНО: Отвечай ТОЛЬКО обычным текстом. Никаких JSON-блоков, никаких технических меток. Пиши как живой менеджер."
 
 KNOWLEDGE_PAGE_ID = os.getenv("NOTION_KNOWLEDGE_PAGE_ID", "")
 _knowledge_cache: str = ""
