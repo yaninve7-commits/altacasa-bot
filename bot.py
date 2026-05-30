@@ -43,20 +43,62 @@ notion = NotionClient(auth=NOTION_TOKEN)
 with open("system_prompt.txt", "r", encoding="utf-8") as f:
     BASE_PROMPT = f.read()
 
-# ── База знаний (обучение через /teach) ───────────────────────────────────────
-KNOWLEDGE_FILE = "custom_knowledge.txt"
+# ── База знаний (хранится в Notion) ──────────────────────────────────────────
+KNOWLEDGE_PAGE_ID = os.getenv("NOTION_KNOWLEDGE_PAGE_ID", "")
+_knowledge_cache: str = ""
+_knowledge_loaded: bool = False
 
 def load_knowledge() -> str:
-    if os.path.exists(KNOWLEDGE_FILE):
-        with open(KNOWLEDGE_FILE, "r", encoding="utf-8") as f:
-            content = f.read().strip()
-        if content:
-            return f"\n\n═══════════════════════════════\nДОПОЛНИТЕЛЬНЫЕ ЗНАНИЯ (добавлены владельцем)\n═══════════════════════════════\n{content}"
-    return ""
+    """Загрузить базу знаний из Notion (кешируем на сессию)."""
+    global _knowledge_cache, _knowledge_loaded
+    if _knowledge_loaded:
+        return _knowledge_cache
+    try:
+        if KNOWLEDGE_PAGE_ID:
+            page = notion.pages.retrieve(page_id=KNOWLEDGE_PAGE_ID)
+            blocks = notion.blocks.children.list(block_id=KNOWLEDGE_PAGE_ID)
+            lines = []
+            for block in blocks.get("results", []):
+                bt = block.get("type")
+                if bt == "paragraph":
+                    texts = block["paragraph"].get("rich_text", [])
+                    line = "".join(t["plain_text"] for t in texts)
+                    if line.strip():
+                        lines.append(line)
+            content = "\n".join(lines).strip()
+            if content:
+                _knowledge_cache = f"\n\n═══════════════════════════════\nДОПОЛНИТЕЛЬНЫЕ ЗНАНИЯ (добавлены владельцем)\n═══════════════════════════════\n{content}"
+            else:
+                _knowledge_cache = ""
+        _knowledge_loaded = True
+    except Exception as e:
+        logger.error(f"Knowledge load error: {e}")
+    return _knowledge_cache
 
 def save_knowledge(entry: str):
-    with open(KNOWLEDGE_FILE, "a", encoding="utf-8") as f:
-        f.write(f"\n{entry}\n")
+    """Сохранить знание в Notion и обновить кеш."""
+    global _knowledge_cache, _knowledge_loaded
+    try:
+        if KNOWLEDGE_PAGE_ID:
+            notion.blocks.children.append(
+                block_id=KNOWLEDGE_PAGE_ID,
+                children=[{
+                    "object": "block",
+                    "type": "paragraph",
+                    "paragraph": {
+                        "rich_text": [{"type": "text", "text": {"content": entry}}]
+                    }
+                }]
+            )
+            # Сбрасываем кеш чтобы перечитать
+            _knowledge_loaded = False
+        else:
+            # Fallback — файл (если нет Notion страницы)
+            with open("custom_knowledge.txt", "a", encoding="utf-8") as f:
+                f.write(f"\n{entry}\n")
+            _knowledge_loaded = False
+    except Exception as e:
+        logger.error(f"Knowledge save error: {e}")
 
 def get_system_prompt() -> str:
     return BASE_PROMPT + load_knowledge()
