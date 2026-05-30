@@ -1,5 +1,6 @@
-python-telegram-bot>=21.6
+python-telegram-bot==21.3
 anthropic>=0.28.0
 notion-client>=2.2.1
 python-dotenv>=1.0.0
 maxapi
+apscheduler>=3.10.0

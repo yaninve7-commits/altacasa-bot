@@ -10,8 +10,11 @@ import logging
 import json
 import base64
 import httpx
+import random
 from datetime import datetime
 from dotenv import load_dotenv
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, MessageHandler, CommandHandler,
@@ -822,6 +825,72 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ── Авто-посты в канал ────────────────────────────────────────────────────────
+
+# Темы для авто-постов — ротация
+AUTO_POST_TOPICS = [
+    "диван MC-A68 — итальянская кожа oil-wax, 3-местный, от 235 000 ₽. Почему кожа oil-wax лучше обычной",
+    "диван FORT — орех и велюр, классика для гостиной, от 99 634 ₽. Почему натуральное дерево в каркасе важно",
+    "кресло Ланьюэ — северо-американский орех, хлопок-лён, 118 921 ₽. Идеальное кресло для домашнего офиса",
+    "кровать Roma Platform — массив дуба, подъёмный механизм, от 62 000 ₽. Как выбрать кровать из Китая",
+    "обеденный стол Palazzo — мрамор Calacatta и нержавеющая сталь, от 118 000 ₽. Мрамор в интерьере",
+    "диван PR701 Облако — модульный, гусиный пух, хлопок-лён, от 219 000 ₽. Почему гусиный пух лучше поролона",
+    "гардеробная Cabinet Pro — матовый лак и шпон, под размер помещения, от 94 000 ₽. Гардеробная из Китая",
+    "ресепшн-стойка Grand Hotel — травертин/мрамор, подсветка, от 157 000 ₽. Мебель для отелей из Китая",
+    "кресло MERCER — орех/ясень, хлопок-лён, от 127 000 ₽. Как сочетать кресла с диваном",
+    "комплектация объектов — отели, рестораны, офисы. Как мы работаем с застройщиками",
+    "340+ фабрик Фошаня и Гуанчжоу — как мы выбираем поставщиков и контролируем качество",
+    "белая таможня и доставка под ключ — как работает логистика мебели из Китая в Россию",
+]
+
+_last_topic_index = -1
+
+
+async def auto_post_to_channel(bot):
+    """Авто-пост в канал — запускается по расписанию."""
+    global _last_topic_index
+    try:
+        # Выбираем тему — по очереди, не повторяем
+        _last_topic_index = (_last_topic_index + 1) % len(AUTO_POST_TOPICS)
+        topic = AUTO_POST_TOPICS[_last_topic_index]
+
+        logger.info(f"Авто-пост: {topic[:50]}...")
+
+        prompt = f"""Напиши продающий пост для Telegram-канала ALTA CASA.
+
+Тема: {topic}
+
+Требования:
+— 3-4 абзаца, живой стиль без канцелярщины
+— Упомяни конкретные материалы и преимущества
+— Ценовой ориентир если есть
+— В конце: "Подробнее и расчёт доставки — @altacasacn_bot"
+— 2-3 emoji уместно
+— Форматирование Markdown (жирный, курсив)
+— Без хэштегов
+
+Верни ТОЛЬКО текст поста."""
+
+        response = ai.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=700,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        post_text = response.content[0].text.strip()
+
+        # Публикуем в канал
+        await bot.send_message(chat_id=CHANNEL_ID, text=post_text, parse_mode="Markdown")
+        logger.info("✅ Авто-пост опубликован")
+
+    except Exception as e:
+        # Если Markdown сломан — пробуем без форматирования
+        try:
+            await bot.send_message(chat_id=CHANNEL_ID, text=post_text)
+            logger.info("✅ Авто-пост опубликован (без Markdown)")
+        except Exception as e2:
+            logger.error(f"Авто-пост ошибка: {e2}")
+
+
 # ── Запуск ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -848,6 +917,17 @@ def main():
 
     # Текст — последним
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    # Планировщик авто-постов: пн/ср/пт в 10:00 по Москве (UTC+3 = 07:00 UTC)
+    scheduler = AsyncIOScheduler(timezone="UTC")
+    scheduler.add_job(
+        auto_post_to_channel,
+        CronTrigger(day_of_week="mon,wed,fri", hour=7, minute=0),
+        args=[app.bot],
+        id="auto_post"
+    )
+    scheduler.start()
+    logger.info("📅 Авто-посты запланированы: пн/ср/пт в 10:00 МСК")
 
     logger.info("🤖 ALTA CASA Bot запущен")
     app.run_polling(drop_pending_updates=True)
