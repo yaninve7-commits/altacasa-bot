@@ -183,9 +183,18 @@ def ask_claude(chat_id: int, user_message: str, extra_system: str = "") -> dict:
 
     if "```json" in raw:
         try:
+            # Текст ДО json-блока — это и есть ответ клиенту
+            text_before_json = raw.split("```json")[0].strip()
             json_part = raw.split("```json")[1].split("```")[0].strip()
             meta = json.loads(json_part)
-            result["reply"]         = meta.get("reply", raw)
+            # Берём reply из JSON, но если он короткий (описание) — берём текст до JSON
+            json_reply = meta.get("reply", "")
+            if json_reply and len(json_reply) > 30:
+                result["reply"] = json_reply
+            elif text_before_json and len(text_before_json) > 10:
+                result["reply"] = text_before_json
+            else:
+                result["reply"] = raw.split("```json")[0].strip() or raw
             result["qualification"] = meta.get("qualification")
             result["interest"]      = meta.get("interest")
             result["budget"]        = meta.get("budget")
