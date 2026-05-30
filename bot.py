@@ -116,7 +116,20 @@ def get_or_create_client(tg_id: int, name: str, username: str) -> str:
         filter={"property": "Telegram ID", "number": {"equals": tg_id}}
     )
     if results["results"]:
-        return results["results"][0]["id"]
+        page = results["results"][0]
+        page_id = page["id"]
+        # Загружаем историю диалога из Notion в память
+        try:
+            history_raw = page["properties"].get("История JSON", {}).get("rich_text", [])
+            if history_raw:
+                history_json = history_raw[0]["plain_text"]
+                loaded = json.loads(history_json)
+                if loaded and tg_id not in dialogs:
+                    dialogs[tg_id] = loaded
+                    logger.info(f"История загружена для {tg_id}: {len(loaded)} сообщений")
+        except Exception as e:
+            logger.error(f"History load error: {e}")
+        return page_id
 
     tg_url = f"https://t.me/{username}" if username else None
     props = {
@@ -134,11 +147,20 @@ def get_or_create_client(tg_id: int, name: str, username: str) -> str:
     return page["id"]
 
 
-def update_client(page_id: str, dialog_text: str, qualification: str = None,
-                  interest: str = None, budget: float = None, escalate: bool = False):
+def update_client(page_id: str, dialog_text: str, history: list = None,
+                  qualification: str = None, interest: str = None,
+                  budget: float = None, escalate: bool = False):
+    # Сохраняем последние 20 сообщений как JSON (только текстовые)
+    history_json = ""
+    if history:
+        text_only = [m for m in history if isinstance(m.get("content"), str)][-20:]
+        history_json = json.dumps(text_only, ensure_ascii=False)
+
     props = {
         "Диалог с ботом": {"rich_text": [{"text": {"content": dialog_text[-2000:]}}]},
     }
+    if history_json:
+        props["История JSON"] = {"rich_text": [{"text": {"content": history_json[:2000]}}]}
     if qualification:
         props["Квалификация"] = {"select": {"name": qualification}}
     if interest:
@@ -636,6 +658,7 @@ async def _send_and_update(update, context, user, page_id, result, original_text
                 for m in history[-10:]
             )
             update_client(page_id, dialog_text,
+                          history=history,
                           qualification=result["qualification"],
                           interest=result["interest"],
                           budget=result["budget"],
