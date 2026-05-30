@@ -965,16 +965,19 @@ def main():
     # Текст — последним
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Планировщик авто-постов: пн/ср/пт в 10:00 по Москве (UTC+3 = 07:00 UTC)
-    scheduler = AsyncIOScheduler(timezone="UTC")
-    scheduler.add_job(
-        auto_post_to_channel,
-        CronTrigger(day_of_week="mon,wed,fri", hour=7, minute=0),
-        args=[app.bot],
-        id="auto_post"
-    )
-    scheduler.start()
-    logger.info("📅 Авто-посты запланированы: пн/ср/пт в 10:00 МСК")
+    # Планировщик авто-постов запускается после старта asyncio loop
+    async def post_init(application):
+        scheduler = AsyncIOScheduler(timezone="UTC")
+        scheduler.add_job(
+            auto_post_to_channel,
+            CronTrigger(day_of_week="mon,wed,fri", hour=7, minute=0),
+            args=[application.bot],
+            id="auto_post"
+        )
+        scheduler.start()
+        logger.info("📅 Авто-посты запланированы: пн/ср/пт в 10:00 МСК")
+
+    app.post_init = post_init
 
     logger.info("🤖 ALTA CASA Bot запущен")
     app.run_polling(drop_pending_updates=True)
