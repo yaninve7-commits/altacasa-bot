@@ -1671,9 +1671,16 @@ async def _send_and_update(update, context, user, page_id, result, original_text
         try:
             # Собираем историю диалога для контекста
             history = dialogs.get(user.id, [])
+            def clean_msg(text: str) -> str:
+                """Убрать JSON блоки из текста."""
+                import re as _re
+                text = _re.sub(r'```json.*?```', '', text, flags=_re.DOTALL)
+                return text.strip()[:150]
+
             dialog_summary = "\n".join(
-                f"{'👤' if m['role'] == 'user' else '🤖'} {m['content'][:150] if isinstance(m['content'], str) else '[медиа]'}"
+                f"{'👤' if m['role'] == 'user' else '🤖'} {clean_msg(m['content']) if isinstance(m['content'], str) else '[медиа]'}"
                 for m in history[-6:]
+                if isinstance(m.get('content'), str) and m['content'].strip()
             )
             interest = result.get("interest") or "не указан"
             budget = f"{int(result['budget']):,} ₽".replace(",", " ") if result.get("budget") else "не указан"
@@ -1714,21 +1721,22 @@ async def _send_and_update(update, context, user, page_id, result, original_text
         except Exception as e:
             logger.error(f"Notion update error: {e}")
 
-    # Синхронизация с amoCRM (в фоне, не блокирует ответ)
+    # Синхронизация с amoCRM (в отдельном потоке)
     if not is_owner(user):
-        try:
-            sync_to_amo(
-                tg_id=user.id,
-                name=user.full_name or "Клиент",
-                username=user.username or "",
-                message_text=original_text[:500],
-                bot_reply=result["reply"][:500],
-                qualification=result.get("qualification"),
-                interest=result.get("interest"),
-                budget=int(result["budget"]) if result.get("budget") else None
-            )
-        except Exception as e:
-            logger.error(f"amoCRM sync error: {e}")
+        import asyncio as _asyncio
+        _qual = result.get("qualification")
+        _interest = result.get("interest")
+        _budget = int(result["budget"]) if result.get("budget") else None
+        _asyncio.get_event_loop().run_in_executor(None, lambda: sync_to_amo(
+            tg_id=user.id,
+            name=user.full_name or "Клиент",
+            username=user.username or "",
+            message_text=original_text[:500],
+            bot_reply=result["reply"][:500],
+            qualification=_qual,
+            interest=_interest,
+            budget=_budget
+        ))
 
     # Ответить клиенту
     await update.message.reply_text(result["reply"])
@@ -2170,6 +2178,24 @@ def main():
 
     # Команда КП
     app.add_handler(CommandHandler("kp", cmd_kp))
+
+    # Тест amoCRM
+    async def cmd_test_amo(update, context):
+        if not is_owner(update.effective_user):
+            return
+        await update.message.reply_text("🔄 Тестирую подключение к amoCRM...")
+        r = amo_request("GET", "account")
+        if "error" in r:
+            await update.message.reply_text(f"❌ amoCRM ошибка: {r['error']}")
+        else:
+            name = r.get("name", "?")
+            await update.message.reply_text(
+                f"✅ amoCRM подключён!\n"
+                f"Аккаунт: {name}\n"
+                f"Домен: {AMO_DOMAIN}\n"
+                f"API: {AMO_API}"
+            )
+    app.add_handler(CommandHandler("test_amo", cmd_test_amo))
 
     # Команды владельца — канал
     app.add_handler(CommandHandler("post",      cmd_post))
