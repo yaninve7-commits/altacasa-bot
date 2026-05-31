@@ -46,60 +46,97 @@ notion = NotionClient(auth=NOTION_TOKEN)
 with open("system_prompt.txt", "r", encoding="utf-8") as f:
     BASE_PROMPT = f.read()
 
-# ── База знаний (хранится в Notion) ──────────────────────────────────────────
-KNOWLEDGE_PAGE_ID = os.getenv("NOTION_KNOWLEDGE_PAGE_ID", "")
+# ── База знаний (хранится в GitHub — постоянно) ───────────────────────────────
+GITHUB_TOKEN  = os.getenv("GITHUB_TOKEN", "")
+GITHUB_REPO   = "yaninve7-commits/altacasa-bot"
+KNOWLEDGE_FILE = "custom_knowledge.txt"
 _knowledge_cache: str = ""
 _knowledge_loaded: bool = False
 
+
+def github_get_file(path: str):
+    """Получить содержимое файла из GitHub. Вернуть (content, sha)."""
+    import urllib.request as _req, base64 as _b64
+    if not GITHUB_TOKEN:
+        return "", ""
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
+    req = _req.Request(url, headers={
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    })
+    try:
+        with _req.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read())
+            return _b64.b64decode(data["content"]).decode("utf-8"), data["sha"]
+    except Exception:
+        return "", ""
+
+
+def github_save_file(path: str, content: str, message: str = "Update"):
+    """Сохранить файл в GitHub автоматически."""
+    import urllib.request as _req, base64 as _b64
+    if not GITHUB_TOKEN:
+        return False
+    _, sha = github_get_file(path)
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
+    payload: dict = {
+        "message": message,
+        "content": _b64.b64encode(content.encode()).decode(),
+        "branch": "main"
+    }
+    if sha:
+        payload["sha"] = sha
+    req = _req.Request(url, data=json.dumps(payload).encode(), headers={
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json",
+        "Content-Type": "application/json"
+    }, method="PUT")
+    try:
+        with _req.urlopen(req, timeout=15) as r:
+            logger.info(f"GitHub saved {path}: {r.status}")
+            return r.status in [200, 201]
+    except Exception as e:
+        logger.error(f"GitHub save error: {e}")
+        return False
+
+
 def load_knowledge() -> str:
-    """Загрузить базу знаний из Notion (кешируем на сессию)."""
+    """Загрузить базу знаний из GitHub (постоянное хранилище)."""
     global _knowledge_cache, _knowledge_loaded
     if _knowledge_loaded:
         return _knowledge_cache
     try:
-        if KNOWLEDGE_PAGE_ID:
-            page = notion.pages.retrieve(page_id=KNOWLEDGE_PAGE_ID)
-            blocks = notion.blocks.children.list(block_id=KNOWLEDGE_PAGE_ID)
-            lines = []
-            for block in blocks.get("results", []):
-                bt = block.get("type")
-                if bt == "paragraph":
-                    texts = block["paragraph"].get("rich_text", [])
-                    line = "".join(t["plain_text"] for t in texts)
-                    if line.strip():
-                        lines.append(line)
-            content = "\n".join(lines).strip()
-            if content:
-                _knowledge_cache = f"\n\n═══════════════════════════════\nДОПОЛНИТЕЛЬНЫЕ ЗНАНИЯ (добавлены владельцем)\n═══════════════════════════════\n{content}"
-            else:
-                _knowledge_cache = ""
+        content, _ = github_get_file(KNOWLEDGE_FILE)
+        if content and content.strip():
+            _knowledge_cache = (
+                f"\n\n═══════════════════════════════\n"
+                f"ДОПОЛНИТЕЛЬНЫЕ ЗНАНИЯ (добавлены владельцем)\n"
+                f"═══════════════════════════════\n{content.strip()}"
+            )
+            logger.info(f"База знаний загружена из GitHub ({len(content)} символов)")
+        elif os.path.exists(KNOWLEDGE_FILE):
+            with open(KNOWLEDGE_FILE, "r", encoding="utf-8") as f:
+                local = f.read().strip()
+            if local:
+                _knowledge_cache = f"\n\n═══════════════════════════════\nДОПОЛНИТЕЛЬНЫЕ ЗНАНИЯ\n═══════════════════════════════\n{local}"
         _knowledge_loaded = True
     except Exception as e:
         logger.error(f"Knowledge load error: {e}")
     return _knowledge_cache
 
+
 def save_knowledge(entry: str):
-    """Сохранить знание в Notion и обновить кеш."""
-    global _knowledge_cache, _knowledge_loaded
+    """Сохранить знание — локально + автоматически в GitHub."""
+    global _knowledge_loaded
     try:
-        if KNOWLEDGE_PAGE_ID:
-            notion.blocks.children.append(
-                block_id=KNOWLEDGE_PAGE_ID,
-                children=[{
-                    "object": "block",
-                    "type": "paragraph",
-                    "paragraph": {
-                        "rich_text": [{"type": "text", "text": {"content": entry}}]
-                    }
-                }]
-            )
-            # Сбрасываем кеш чтобы перечитать
-            _knowledge_loaded = False
-        else:
-            # Fallback — файл (если нет Notion страницы)
-            with open("custom_knowledge.txt", "a", encoding="utf-8") as f:
-                f.write(f"\n{entry}\n")
-            _knowledge_loaded = False
+        current, _ = github_get_file(KNOWLEDGE_FILE)
+        new_content = (current.strip() + f"\n{entry}").strip()
+        with open(KNOWLEDGE_FILE, "w", encoding="utf-8") as f:
+            f.write(new_content)
+        ok = github_save_file(KNOWLEDGE_FILE, new_content, f"Knowledge: {entry[:60]}")
+        if ok:
+            logger.info(f"Знание сохранено в GitHub: {entry[:60]}")
+        _knowledge_loaded = False
     except Exception as e:
         logger.error(f"Knowledge save error: {e}")
 
