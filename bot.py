@@ -1744,8 +1744,8 @@ async def _send_and_update(update, context, user, page_id, result, original_text
                 f"📱 TG: @{user.username or 'нет'} | ID: {user.id}\n"
                 f"🛋 Интерес: {interest}\n"
                 f"💰 Бюджет: {budget}\n"
-                f"📊 Статус: {qualification}\n\n"
-                f"💬 Диалог:\n{dialog_summary}"
+                f"📊 Статус: {qualification}\n🔗 amoCRM: https://yaninve7.amocrm.ru/leads/detail/{_amo_client_cache.get(user.id, {}).get('lead_id', '?')}\n\n"
+                f"📝 Причина:\n{result.get('reply','')[:200]}\n\n💬 Диалог:\n{dialog_summary}"
             )
             await context.bot.send_message(
                 chat_id=int(MANAGER_CHAT_ID),
