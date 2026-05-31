@@ -188,6 +188,49 @@ DIRECTOR_TOOLS = [
         }
     },
     {
+        "name": "update_deal",
+        "description": "Обновить сделку в amoCRM: изменить статус, сумму, добавить примечание",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "deal_id": {"type": "integer", "description": "ID сделки в amoCRM"},
+                "status": {
+                    "type": "string",
+                    "enum": ["новая", "переговоры", "кп_отправлено", "согласование", "успешно", "отказ"],
+                    "description": "Новый статус сделки"
+                },
+                "price": {"type": "integer", "description": "Новая сумма сделки в рублях"},
+                "note": {"type": "string", "description": "Примечание к сделке"}
+            },
+            "required": ["deal_id"]
+        }
+    },
+    {
+        "name": "create_deal",
+        "description": "Создать новую сделку в amoCRM из Telegram-лида",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Название сделки"},
+                "client_name": {"type": "string", "description": "Имя клиента"},
+                "price": {"type": "integer", "description": "Сумма сделки в рублях"},
+                "note": {"type": "string", "description": "Описание / первое сообщение клиента"}
+            },
+            "required": ["name", "client_name"]
+        }
+    },
+    {
+        "name": "search_deals",
+        "description": "Найти сделки в amoCRM по названию или клиенту",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Поисковый запрос (имя клиента или название сделки)"}
+            },
+            "required": ["query"]
+        }
+    },
+    {
         "name": "get_revenue_stats",
         "description": "Получить статистику выручки и сделок: суммы, количество, средний чек, по стадиям и менеджерам. Сравнение с предыдущим периодом.",
         "input_schema": {
@@ -309,6 +352,275 @@ def amo_get_leads(days: int, limit: int = 250) -> list:
     except Exception as e:
         logger.error(f"amoCRM API error: {e}")
         return []
+
+
+# ── amoCRM CRM Sync ───────────────────────────────────────────────────────────
+# Кеш: tg_id → {"contact_id": int, "lead_id": int}
+_amo_client_cache: dict[int, dict] = {}
+
+# Маппинг статусов → ID в воронке amoCRM (стандартные)
+AMO_STATUS_MAP = {
+    "новая":         142,   # Первичный контакт
+    "переговоры":    143,   # Переговоры
+    "кп_отправлено": 144,   # Принимают решение
+    "согласование":  525743, # Согласование
+    "успешно":       142,   # перезапишем ниже
+    "отказ":         143,   # перезапишем ниже
+}
+AMO_WON_STATUS  = 142  # Won (победа)
+AMO_LOST_STATUS = 143  # Lost (отказ)
+
+
+def amo_request(method: str, path: str, data: dict = None) -> dict:
+    """Универсальный запрос к amoCRM API."""
+    import urllib.request, urllib.error
+    if not AMO_TOKEN:
+        return {"error": "AMO_LONG_TOKEN не настроен"}
+    url = f"https://{AMO_DOMAIN}/api/v4/{path}"
+    headers = {
+        "Authorization": f"Bearer {AMO_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    body = json.dumps(data).encode() if data else None
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read()) if r.status not in [204] else {"status": "ok"}
+    except urllib.error.HTTPError as e:
+        return {"error": f"HTTP {e.code}: {e.read().decode()[:200]}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def amo_get_pipeline_statuses() -> dict:
+    """Получить ID статусов из первой воронки."""
+    r = amo_request("GET", "leads/pipelines")
+    pipelines = r.get("_embedded", {}).get("pipelines", [])
+    if not pipelines:
+        return {}
+    statuses = {}
+    for s in pipelines[0].get("_embedded", {}).get("statuses", []):
+        statuses[s["name"].lower()] = s["id"]
+    return {"pipeline_id": pipelines[0]["id"], "statuses": statuses}
+
+
+def director_update_deal(deal_id: int, status: str = None, price: int = None, note: str = None) -> dict:
+    """Обновить сделку в amoCRM."""
+    payload = {}
+
+    if status:
+        # Получаем реальные ID статусов
+        pipe_info = amo_get_pipeline_statuses()
+        statuses = pipe_info.get("statuses", {})
+        # Ищем нужный статус
+        status_id = None
+        status_map = {
+            "новая": ["первичный", "новая", "new"],
+            "переговоры": ["переговор", "discuss"],
+            "кп_отправлено": ["кп", "предложение", "принимают"],
+            "согласование": ["согласован", "decision"],
+            "успешно": ["успешно", "won", "закрыт"],
+            "отказ": ["отказ", "lost", "провал"]
+        }
+        for key, keywords in status_map.items():
+            if status == key:
+                for sname, sid in statuses.items():
+                    if any(kw in sname for kw in keywords):
+                        status_id = sid
+                        break
+        if status_id:
+            payload["status_id"] = status_id
+        if pipe_info.get("pipeline_id"):
+            payload["pipeline_id"] = pipe_info["pipeline_id"]
+
+    if price is not None:
+        payload["price"] = price
+
+    result = amo_request("PATCH", f"leads/{deal_id}", [{"id": deal_id, **payload}])
+
+    # Добавляем примечание
+    if note:
+        amo_request("POST", "notes", [{"entity_id": deal_id, "note_type": "common", "params": {"text": note}, "entity_type": "leads"}])
+
+    return {"deal_id": deal_id, "updated": payload, "result": result}
+
+
+def director_create_deal(name: str, client_name: str, price: int = 0, note: str = "") -> dict:
+    """Создать новую сделку в amoCRM."""
+    pipe_info = amo_get_pipeline_statuses()
+
+    deal_data = [{
+        "name": name,
+        "price": price,
+        "_embedded": {
+            "contacts": [{"name": client_name}]
+        }
+    }]
+    if pipe_info.get("pipeline_id"):
+        deal_data[0]["pipeline_id"] = pipe_info["pipeline_id"]
+
+    result = amo_request("POST", "leads/complex", deal_data)
+
+    if note and result.get("_embedded", {}).get("leads"):
+        deal_id = result["_embedded"]["leads"][0]["id"]
+        amo_request("POST", "notes", [{
+            "entity_id": deal_id,
+            "note_type": "common",
+            "params": {"text": note},
+            "entity_type": "leads"
+        }])
+
+    return result
+
+
+def director_search_deals(query: str) -> list:
+    """Найти сделки по запросу."""
+    r = amo_request("GET", f"leads?query={query}&limit=10&with=contacts")
+    leads = r.get("_embedded", {}).get("leads", [])
+    result = []
+    for l in leads:
+        contacts = l.get("_embedded", {}).get("contacts", [])
+        client = contacts[0].get("name", "—") if contacts else "—"
+        result.append({
+            "id": l.get("id"),
+            "name": l.get("name"),
+            "price": l.get("price"),
+            "status_id": l.get("status_id"),
+            "client": client,
+            "created_at": l.get("created_at")
+        })
+    return result
+
+
+def amo_get_or_create_contact(tg_id: int, name: str, tg_username: str = "") -> int:
+    """Найти или создать контакт в amoCRM. Вернуть contact_id."""
+    if not AMO_TOKEN:
+        return 0
+    # Ищем по имени
+    r = amo_request("GET", f"contacts?query={name}&limit=5")
+    contacts = r.get("_embedded", {}).get("contacts", [])
+    # Ищем совпадение по tg_id в custom fields или имени
+    for c in contacts:
+        if c.get("name") == name:
+            return c["id"]
+    # Создаём нового
+    data = [{"name": name, "custom_fields_values": [
+        {"field_code": "PHONE", "values": [{"value": f"tg:{tg_id}"}]}
+    ]}]
+    if tg_username:
+        data[0]["custom_fields_values"].append(
+            {"field_code": "SITE", "values": [{"value": f"https://t.me/{tg_username}"}]}
+        )
+    r = amo_request("POST", "contacts", data)
+    contacts = r.get("_embedded", {}).get("contacts", [])
+    return contacts[0]["id"] if contacts else 0
+
+
+def amo_get_or_create_lead(tg_id: int, contact_id: int, name: str) -> int:
+    """Найти активную сделку контакта или создать новую. Вернуть lead_id."""
+    if not AMO_TOKEN or not contact_id:
+        return 0
+    # Ищем сделки контакта
+    r = amo_request("GET", f"leads?filter[contact_id]={contact_id}&limit=5")
+    leads = r.get("_embedded", {}).get("leads", [])
+    # Берём последнюю незакрытую
+    for l in leads:
+        if l.get("status_id") not in [142, 143]:  # не Won/Lost
+            return l["id"]
+    # Создаём новую
+    pipe_info = amo_get_pipeline_statuses()
+    data = [{
+        "name": f"Запрос от {name}",
+        "price": 0,
+        "_embedded": {"contacts": [{"id": contact_id}]}
+    }]
+    if pipe_info.get("pipeline_id"):
+        data[0]["pipeline_id"] = pipe_info["pipeline_id"]
+    r = amo_request("POST", "leads/complex", data)
+    leads = r.get("_embedded", {}).get("leads", [])
+    return leads[0]["id"] if leads else 0
+
+
+def amo_add_note(lead_id: int, text: str, note_type: str = "common"):
+    """Добавить комментарий к сделке."""
+    if not AMO_TOKEN or not lead_id:
+        return
+    amo_request("POST", "leads/notes", [{
+        "entity_id": lead_id,
+        "note_type": note_type,
+        "params": {"text": text[:1000]}
+    }])
+
+
+def amo_move_pipeline(lead_id: int, qualification: str, interest: str = None, budget: int = None):
+    """Двинуть сделку по воронке на основе квалификации."""
+    if not AMO_TOKEN or not lead_id:
+        return
+    pipe_info = amo_get_pipeline_statuses()
+    statuses = pipe_info.get("statuses", {})
+    pipeline_id = pipe_info.get("pipeline_id")
+
+    # Находим нужный статус по квалификации
+    target_status = None
+    if qualification == "Горячий":
+        for name, sid in statuses.items():
+            if any(k in name.lower() for k in ["переговор", "кп", "принимают", "discuss"]):
+                target_status = sid
+                break
+    elif qualification == "Передан менеджеру":
+        for name, sid in statuses.items():
+            if any(k in name.lower() for k in ["кп", "отправлено", "ожидан"]):
+                target_status = sid
+                break
+
+    payload: dict = {}
+    if target_status:
+        payload["status_id"] = target_status
+    if pipeline_id:
+        payload["pipeline_id"] = pipeline_id
+    if budget:
+        payload["price"] = budget
+
+    if payload:
+        amo_request("PATCH", "leads", [{"id": lead_id, **payload}])
+
+
+def sync_to_amo(tg_id: int, name: str, username: str,
+                message_text: str, bot_reply: str,
+                qualification: str = None, interest: str = None, budget: int = None):
+    """Главная функция синхронизации диалога с amoCRM."""
+    if not AMO_TOKEN:
+        return
+
+    try:
+        # Получаем из кеша или создаём
+        if tg_id not in _amo_client_cache:
+            contact_id = amo_get_or_create_contact(tg_id, name, username)
+            if not contact_id:
+                return
+            lead_id = amo_get_or_create_lead(tg_id, contact_id, name)
+            _amo_client_cache[tg_id] = {"contact_id": contact_id, "lead_id": lead_id}
+        else:
+            lead_id = _amo_client_cache[tg_id].get("lead_id", 0)
+
+        if not lead_id:
+            return
+
+        # Добавляем сообщение клиента как комментарий
+        note = f"👤 {name}: {message_text}\n🤖 Юля: {bot_reply[:300]}"
+        if interest:
+            note += f"\n📦 Интерес: {interest}"
+        if budget:
+            note += f"\n💰 Бюджет: {budget:,} ₽".replace(",", " ")
+        amo_add_note(lead_id, note)
+
+        # Двигаем по воронке если есть квалификация
+        if qualification in ("Горячий", "Передан менеджеру"):
+            amo_move_pipeline(lead_id, qualification, interest, budget)
+
+        logger.info(f"amoCRM sync: tg={tg_id} lead={lead_id} qual={qualification}")
+    except Exception as e:
+        logger.error(f"amoCRM sync error: {e}")
 
 
 def director_get_revenue_stats(days: int, group_by: str = "итого") -> dict:
@@ -476,6 +788,22 @@ async def handle_owner_director(update: Update, context: ContextTypes.DEFAULT_TY
                         result = {"status": "sent", "tg_id": inp["tg_id"]}
                     elif tool == "get_channel_info":
                         result = {"channel": CHANNEL_ID, "note": "Данные канала доступны через Telegram API"}
+                    elif tool == "update_deal":
+                        result = director_update_deal(
+                            inp["deal_id"],
+                            inp.get("status"),
+                            inp.get("price"),
+                            inp.get("note")
+                        )
+                    elif tool == "create_deal":
+                        result = director_create_deal(
+                            inp["name"],
+                            inp["client_name"],
+                            inp.get("price", 0),
+                            inp.get("note", "")
+                        )
+                    elif tool == "search_deals":
+                        result = director_search_deals(inp["query"])
                     elif tool == "get_revenue_stats":
                         result = director_get_revenue_stats(
                             inp.get("days", 30),
@@ -1103,6 +1431,22 @@ async def _send_and_update(update, context, user, page_id, result, original_text
                           escalate=result["escalate"])
         except Exception as e:
             logger.error(f"Notion update error: {e}")
+
+    # Синхронизация с amoCRM (в фоне, не блокирует ответ)
+    if not is_owner(user):
+        try:
+            sync_to_amo(
+                tg_id=user.id,
+                name=user.full_name or "Клиент",
+                username=user.username or "",
+                message_text=original_text[:500],
+                bot_reply=result["reply"][:500],
+                qualification=result.get("qualification"),
+                interest=result.get("interest"),
+                budget=int(result["budget"]) if result.get("budget") else None
+            )
+        except Exception as e:
+            logger.error(f"amoCRM sync error: {e}")
 
     # Ответить клиенту
     await update.message.reply_text(result["reply"])
