@@ -579,26 +579,47 @@ def director_search_deals(query: str) -> list:
 
 def amo_get_or_create_contact(tg_id: int, name: str, tg_username: str = "") -> int:
     """Найти или создать контакт в amoCRM. Вернуть contact_id."""
+    import urllib.parse as _urlparse
     if not AMO_TOKEN:
         return 0
-    # Ищем по имени
-    r = amo_request("GET", f"contacts?query={name}&limit=5")
+
+    # 1. Ищем по имени — с правильным URL-encode
+    params = _urlparse.urlencode({"query": name, "limit": 5})
+    r = amo_request("GET", f"contacts?{params}")
     contacts = r.get("_embedded", {}).get("contacts", [])
-    # Ищем совпадение по tg_id в custom fields или имени
     for c in contacts:
         if c.get("name") == name:
             return c["id"]
-    # Создаём нового
-    data = [{"name": name, "custom_fields_values": [
-        {"field_code": "PHONE", "values": [{"value": f"tg:{tg_id}"}]}
-    ]}]
+
+    # 2. Также ищем по tg_id если есть
+    if not contacts and tg_username:
+        params2 = _urlparse.urlencode({"query": tg_username, "limit": 3})
+        r2 = amo_request("GET", f"contacts?{params2}")
+        for c in r2.get("_embedded", {}).get("contacts", []):
+            if c.get("name") == name:
+                return c["id"]
+
+    # 3. Создаём нового — только стандартные поля без кастомных field_code
+    note_text = f"Telegram ID: {tg_id}"
     if tg_username:
-        data[0]["custom_fields_values"].append(
-            {"field_code": "SITE", "values": [{"value": f"https://t.me/{tg_username}"}]}
-        )
+        note_text += f"\n@{tg_username}"
+
+    data = [{"name": name}]  # минимальный payload без кастомных полей
     r = amo_request("POST", "contacts", data)
-    contacts = r.get("_embedded", {}).get("contacts", [])
-    return contacts[0]["id"] if contacts else 0
+    new_contacts = r.get("_embedded", {}).get("contacts", [])
+    if not new_contacts:
+        logger.error(f"amoCRM: не удалось создать контакт для {name}: {r}")
+        return 0
+    contact_id = new_contacts[0]["id"]
+
+    # 4. Добавляем Telegram данные как примечание (надёжнее чем кастомные поля)
+    amo_request("POST", "contacts/notes", [{
+        "entity_id": contact_id,
+        "note_type": "common",
+        "params": {"text": note_text}
+    }])
+    logger.info(f"amoCRM: создан контакт {name} (id={contact_id})")
+    return contact_id
 
 
 def amo_get_or_create_lead(tg_id: int, contact_id: int, name: str) -> int:
