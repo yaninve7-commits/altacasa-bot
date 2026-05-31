@@ -393,8 +393,10 @@ def amo_get_leads(days: int, limit: int = 250) -> list:
 
 
 # ── amoCRM CRM Sync ───────────────────────────────────────────────────────────
-# Кеш: tg_id → {"contact_id": int, "lead_id": int}
+# Кеш: tg_id → {"contact_id": int, "lead_id": int, "escalated": bool}
 _amo_client_cache: dict[int, dict] = {}
+# Клиенты по которым уже было эскалационное уведомление
+_escalated_clients: set = set()
 
 # Маппинг статусов → ID в воронке amoCRM (стандартные)
 AMO_STATUS_MAP = {
@@ -1497,9 +1499,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     result = ask_claude(user.id, text + extra_context)
-    # Если внешняя ссылка — принудительно эскалируем
-    if has_external_link:
-        result["escalate"] = True
+
+    # Если внешняя ссылка — тихо форвардим тебе (без эскалации в чат клиента)
+    if has_external_link and MANAGER_CHAT_ID:
+        try:
+            await context.bot.send_message(
+                chat_id=int(MANAGER_CHAT_ID),
+                text=(
+                    f"🔗 Клиент {user.full_name} прислал внешнюю ссылку:\n\n"
+                    f"{text[:500]}\n\n"
+                    f"Ответь через: `ответь {user.full_name} [твой текст]`"
+                ),
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+        # НЕ ставим escalate=True — Юля продолжает вести диалог
+
     await _send_and_update(update, context, user, page_id, result, text)
 
 
@@ -1563,8 +1579,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def _send_and_update(update, context, user, page_id, result, original_text):
     """Отправить ответ клиенту и обновить Notion."""
-    # Уведомить менеджера при эскалации
-    if result["escalate"] and MANAGER_CHAT_ID:
+    # Уведомить менеджера при эскалации — ТОЛЬКО ОДИН РАЗ на клиента
+    if result["escalate"] and MANAGER_CHAT_ID and user.id not in _escalated_clients:
         try:
             # Собираем историю диалога для контекста
             history = dialogs.get(user.id, [])
@@ -1589,6 +1605,8 @@ async def _send_and_update(update, context, user, page_id, result, original_text
                 chat_id=int(MANAGER_CHAT_ID),
                 text=msg
             )
+            # Помечаем что уже уведомили — не будем спамить
+            _escalated_clients.add(user.id)
         except Exception as e:
             logger.error(f"Escalation notify error: {e}")
 
