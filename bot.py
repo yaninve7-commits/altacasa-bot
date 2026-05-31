@@ -636,10 +636,21 @@ def sync_to_amo(tg_id: int, name: str, username: str,
             contact_id = amo_get_or_create_contact(tg_id, name, username)
             if not contact_id:
                 return
-            lead_id = amo_get_or_create_lead(tg_id, contact_id, name)
+
+            # Для горячего лида — создаём именованную сделку
+            if qualification == "Горячий" and interest:
+                lead_name = f"{name} — {interest}"
+            else:
+                lead_name = f"Запрос от {name}"
+
+            lead_id = amo_get_or_create_lead(tg_id, contact_id, lead_name)
             _amo_client_cache[tg_id] = {"contact_id": contact_id, "lead_id": lead_id}
         else:
             lead_id = _amo_client_cache[tg_id].get("lead_id", 0)
+
+            # Обновляем название сделки если стал горячим
+            if qualification == "Горячий" and interest and lead_id:
+                amo_request("PATCH", "leads", [{"id": lead_id, "name": f"{name} — {interest}"}])
 
         if not lead_id:
             return
@@ -650,9 +661,11 @@ def sync_to_amo(tg_id: int, name: str, username: str,
             note += f"\n📦 Интерес: {interest}"
         if budget:
             note += f"\n💰 Бюджет: {budget:,} ₽".replace(",", " ")
+        if qualification:
+            note += f"\n📊 Статус: {qualification}"
         amo_add_note(lead_id, note)
 
-        # Двигаем по воронке если есть квалификация
+        # Двигаем по воронке + обновляем сумму если известен бюджет
         if qualification in ("Горячий", "Передан менеджеру"):
             amo_move_pipeline(lead_id, qualification, interest, budget)
 
@@ -1417,6 +1430,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
+    # ── Проверка внешних ссылок ────────────────────────────────────────────────
+    import re
+    urls_in_text = re.findall(r'https?://[^\s]+', text)
+    has_external_link = any(
+        "altacasa.ru" not in url and "t.me" not in url and "max.ru" not in url
+        for url in urls_in_text
+    )
+    # Если есть внешняя ссылка — добавим подсказку в промт для Claude
+    extra_context = ""
+    if has_external_link:
+        extra_context = "\n[СИСТЕМА: клиент прислал ссылку НЕ с нашего сайта. Применяй правило эскалации для внешних ссылок.]"
+
     # ── Обычный клиент ─────────────────────────────────────────────────────────
     page_id = None
     try:
@@ -1425,7 +1450,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Notion error: {e}")
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    result = ask_claude(user.id, text)
+    result = ask_claude(user.id, text + extra_context)
+    # Если внешняя ссылка — принудительно эскалируем
+    if has_external_link:
+        result["escalate"] = True
     await _send_and_update(update, context, user, page_id, result, text)
 
 
@@ -1449,8 +1477,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Берём наибольшее разрешение фото
         photo = update.message.photo[-1]
         image_data = await download_photo(context.bot, photo.file_id)
-        prompt = caption if caption else "Клиент прислал фото. Пойми что это и ответь как менеджер по мебели."
+        prompt = caption if caption else "Клиент прислал фото товара который хочет найти или купить. Ответь согласно правилам работы с фото."
         result = ask_claude(user.id, prompt, image_data=image_data)
+        # Фото от клиента всегда эскалируем владельцу
+        result["escalate"] = True
     except Exception as e:
         logger.error(f"Photo processing error: {e}")
         result = {"reply": "Получила ваше фото! Уточните, что именно вас интересует?",
