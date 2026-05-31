@@ -431,10 +431,35 @@ def amo_get_leads(days: int, limit: int = 250) -> list:
 
 
 # ── amoCRM CRM Sync ───────────────────────────────────────────────────────────
-# Кеш: tg_id → {"contact_id": int, "lead_id": int, "escalated": bool}
+# Кеш: tg_id → {"contact_id": int, "lead_id": int}
 _amo_client_cache: dict[int, dict] = {}
 # Клиенты по которым уже было эскалационное уведомление
 _escalated_clients: set = set()
+# Персистентный маппинг tg_id → amo_contact_id (защита от дублей при рестарте)
+AMO_MAP_FILE = "amo_id_map.json"
+
+def _load_amo_map() -> dict:
+    """Загрузить маппинг tg_id → {contact_id, lead_id} из файла."""
+    if os.path.exists(AMO_MAP_FILE):
+        try:
+            with open(AMO_MAP_FILE, "r") as f:
+                return {int(k): v for k, v in json.load(f).items()}
+        except Exception:
+            pass
+    return {}
+
+def _save_amo_map(tg_id: int, contact_id: int, lead_id: int):
+    """Сохранить маппинг персистентно."""
+    data = _load_amo_map()
+    data[tg_id] = {"contact_id": contact_id, "lead_id": lead_id}
+    try:
+        with open(AMO_MAP_FILE, "w") as f:
+            json.dump({str(k): v for k, v in data.items()}, f)
+    except Exception as e:
+        logger.error(f"amo_map save error: {e}")
+
+# Загружаем маппинг при старте
+_amo_client_cache = _load_amo_map()
 
 # Маппинг статусов → ID в воронке amoCRM (стандартные)
 AMO_STATUS_MAP = {
@@ -713,6 +738,7 @@ def sync_to_amo(tg_id: int, name: str, username: str,
 
             lead_id = amo_get_or_create_lead(tg_id, contact_id, lead_name)
             _amo_client_cache[tg_id] = {"contact_id": contact_id, "lead_id": lead_id}
+            _save_amo_map(tg_id, contact_id, lead_id)  # персистентно
         else:
             lead_id = _amo_client_cache[tg_id].get("lead_id", 0)
 
@@ -2070,6 +2096,138 @@ async def generate_kp_pdf(data: dict, client_name: str) -> bytes:
     return buffer.getvalue()
 
 
+# ── Ежедневный отчёт ────────────────────────────────────────────────────────
+
+async def daily_report(bot):
+    """Ежедневный отчёт владельцу в 9:00 МСК."""
+    if not MANAGER_CHAT_ID:
+        return
+    try:
+        # Получаем лиды из amoCRM за последние 24 часа
+        import time as _time
+        since = int(_time.time()) - 86400
+        r_new = amo_request("GET", f"leads?filter[created_at][from]={since}&limit=50")
+        new_leads = r_new.get("_embedded", {}).get("leads", [])
+
+        # Все активные лиды
+        r_all = amo_request("GET", "leads?limit=50&order[created_at]=desc")
+        all_leads = r_all.get("_embedded", {}).get("leads", [])
+
+        # Горячие (с ценой > 0 и не закрытые)
+        hot = [l for l in all_leads if (l.get("price") or 0) > 0 and l.get("status_id") not in [142, 143]]
+        # Зависшие (не обновлялись 3+ дня)
+        stale_ts = int(_time.time()) - 259200
+        stale = [l for l in all_leads if (l.get("updated_at") or 0) < stale_ts and l.get("status_id") not in [142, 143]]
+
+        total_sum = sum(l.get("price", 0) or 0 for l in all_leads if l.get("status_id") not in [142, 143])
+
+        msg = (
+            f"☀️ *Доброе утро! Отчёт ALTA CASA*\n\n"
+            f"📊 За последние 24 часа:\n"
+            f"• Новых лидов: {len(new_leads)}\n"
+            f"• Горячих в работе: {len(hot)}\n"
+            f"• Сумма в работе: {total_sum:,} ₽\n\n".replace(",", " ")
+        )
+
+        if stale:
+            msg += f"⚠️ Зависли (3+ дня без активности):\n"
+            for l in stale[:5]:
+                contacts = l.get("_embedded", {}).get("contacts", [])
+                client = contacts[0].get("name", "—") if contacts else "—"
+                msg += f"• {client} — {l.get('name', '?')}\n"
+            msg += "\n"
+
+        msg += "Напиши мне что нужно сделать сегодня или спроси статистику."
+
+        await bot.send_message(chat_id=int(MANAGER_CHAT_ID), text=msg, parse_mode="Markdown")
+        logger.info("📊 Ежедневный отчёт отправлен")
+    except Exception as e:
+        logger.error(f"daily_report error: {e}")
+
+
+# ── Follow-up автоматика ──────────────────────────────────────────────────────
+
+# Храним когда отправляли follow-up: {lead_id: [timestamp1, timestamp2]}
+_followup_sent: dict[int, list] = {}
+
+FOLLOWUP_MESSAGES = [
+    "Добрый день! Возвращаюсь к вашему запросу. Хотите, я подберу несколько вариантов под ваш бюджет и стиль?",
+    "Здравствуйте! Хотел(а) уточнить — остался ли интерес к нашей мебели? Готова ответить на любые вопросы.",
+]
+
+async def followup_check(bot):
+    """Проверяем тёплых/горячих лидов которые молчат 2+ дня."""
+    import time as _time
+    now = int(_time.time())
+    cutoff_2d = now - 172800  # 2 дня
+    cutoff_5d = now - 432000  # 5 дней
+    cutoff_7d = now - 604800  # 7 дней
+
+    # Только днём (9-20 МСК = 6-17 UTC)
+    hour_utc = datetime.utcnow().hour
+    if not (6 <= hour_utc <= 17):
+        return
+
+    try:
+        r = amo_request("GET", "leads?limit=100&order[updated_at]=asc")
+        leads = r.get("_embedded", {}).get("leads", [])
+
+        for lead in leads:
+            lead_id = lead.get("id")
+            status_id = lead.get("status_id")
+            updated = lead.get("updated_at", 0) or 0
+            price = lead.get("price") or 0
+
+            # Только активные тёплые/горячие
+            if status_id in [142, 143]:  # Won/Lost
+                continue
+            if price == 0:  # Холодный — пропускаем
+                continue
+
+            sent = _followup_sent.get(lead_id, [])
+            contacts = lead.get("_embedded", {}).get("contacts", []) if isinstance(lead.get("_embedded"), dict) else []
+            client_name = contacts[0].get("name", "Клиент") if contacts else "Клиент"
+
+            # Ищем tg_id клиента в кеше
+            tg_id = None
+            for tid, data in _amo_client_cache.items():
+                if data.get("lead_id") == lead_id:
+                    tg_id = tid
+                    break
+
+            if not tg_id:
+                continue
+
+            # 2 дня — первый follow-up
+            if updated < cutoff_2d and len(sent) == 0:
+                msg = FOLLOWUP_MESSAGES[0]
+                await bot.send_message(chat_id=tg_id, text=msg)
+                _followup_sent[lead_id] = [now]
+                amo_add_note(lead_id, f"📤 Follow-up #1 отправлен: {msg[:100]}")
+                logger.info(f"Follow-up #1 → lead {lead_id} ({client_name})")
+
+            # 5 дней — второй follow-up
+            elif updated < cutoff_5d and len(sent) == 1:
+                msg = FOLLOWUP_MESSAGES[1]
+                await bot.send_message(chat_id=tg_id, text=msg)
+                _followup_sent[lead_id].append(now)
+                amo_add_note(lead_id, f"📤 Follow-up #2 отправлен")
+                logger.info(f"Follow-up #2 → lead {lead_id} ({client_name})")
+
+            # 7 дней — задача владельцу
+            elif updated < cutoff_7d and len(sent) == 2:
+                if MANAGER_CHAT_ID:
+                    await bot.send_message(
+                        chat_id=int(MANAGER_CHAT_ID),
+                        text=f"⚠️ *{client_name}* не отвечает 7 дней.\nСделка: {lead.get('name', '?')}\nПроверьте вручную."
+                    )
+                _followup_sent[lead_id].append(now)
+                logger.info(f"Follow-up #3 владельцу → lead {lead_id}")
+
+    except Exception as e:
+        logger.error(f"followup_check error: {e}")
+
+
 # ── Авто-посты в канал ────────────────────────────────────────────────────────
 
 # Темы для авто-постов — ротация
@@ -2231,17 +2389,31 @@ def main():
     # Текст — последним
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Планировщик авто-постов запускается после старта asyncio loop
+    # Планировщик запускается после старта asyncio loop
     async def post_init(application):
         scheduler = AsyncIOScheduler(timezone="UTC")
+
+        # Авто-посты пн/ср/пт в 10:00 МСК (UTC+3 = 07:00 UTC)
         scheduler.add_job(
             auto_post_to_channel,
             CronTrigger(day_of_week="mon,wed,fri", hour=7, minute=0),
-            args=[application.bot],
-            id="auto_post"
+            args=[application.bot], id="auto_post"
         )
+
+        # Ежедневный отчёт в 9:00 МСК (06:00 UTC)
+        scheduler.add_job(
+            daily_report, CronTrigger(hour=6, minute=0),
+            args=[application.bot], id="daily_report"
+        )
+
+        # Follow-up каждые 6 часов — проверяем зависших лидов
+        scheduler.add_job(
+            followup_check, CronTrigger(hour="6,12,18", minute=0),
+            args=[application.bot], id="followup"
+        )
+
         scheduler.start()
-        logger.info("📅 Авто-посты запланированы: пн/ср/пт в 10:00 МСК")
+        logger.info("📅 Планировщик запущен: посты + отчёт + follow-up")
 
     app.post_init = post_init
 
