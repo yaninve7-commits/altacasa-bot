@@ -204,6 +204,28 @@ DIRECTOR_TOOLS = [
         }
     },
     {
+        "name": "reply_to_lead",
+        "description": "Найти клиента по имени/username и отправить ему сообщение от Юли. Используй когда владелец хочет ответить клиенту или задать уточняющий вопрос.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "client_name": {"type": "string", "description": "Имя или username клиента (из уведомления)"},
+                "message": {"type": "string", "description": "Что написать клиенту от Юли"},
+                "photo_urls": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Фото товаров для отправки (опционально)"
+                },
+                "buttons": {
+                    "type": "array",
+                    "items": {"type": "object", "properties": {"text": {"type": "string"}, "url": {"type": "string"}}},
+                    "description": "Кнопки-ссылки (опционально)"
+                }
+            },
+            "required": ["client_name", "message"]
+        }
+    },
+    {
         "name": "update_deal",
         "description": "Обновить сделку в amoCRM: изменить статус, сумму, добавить примечание",
         "input_schema": {
@@ -838,6 +860,35 @@ async def handle_owner_director(update: Update, context: ContextTypes.DEFAULT_TY
                         result = {"status": "sent", "tg_id": tg_id, "photos": len(photo_urls), "buttons": len(buttons)}
                     elif tool == "get_channel_info":
                         result = {"channel": CHANNEL_ID, "note": "Данные канала доступны через Telegram API"}
+                    elif tool == "reply_to_lead":
+                        # Ищем клиента в Notion по имени
+                        clients = director_find_client(inp["client_name"])
+                        if not clients:
+                            result = {"error": f"Клиент '{inp['client_name']}' не найден в базе"}
+                        else:
+                            client = clients[0]
+                            tg_id = client.get("tg_id")
+                            if not tg_id:
+                                result = {"error": f"У клиента {client['name']} нет Telegram ID"}
+                            else:
+                                msg = inp["message"]
+                                photo_urls = inp.get("photo_urls", [])
+                                buttons = inp.get("buttons", [])
+                                reply_markup = None
+                                if buttons:
+                                    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+                                    keyboard = [[InlineKeyboardButton(b["text"], url=b["url"])] for b in buttons if b.get("url")]
+                                    if keyboard:
+                                        reply_markup = InlineKeyboardMarkup(keyboard)
+                                if photo_urls:
+                                    await bot_ref.send_photo(chat_id=tg_id, photo=photo_urls[0], caption=msg[:1024], reply_markup=reply_markup)
+                                else:
+                                    await bot_ref.send_message(chat_id=tg_id, text=msg, reply_markup=reply_markup)
+                                # Добавляем в amoCRM как исходящее сообщение
+                                if tg_id in _amo_client_cache:
+                                    lead_id = _amo_client_cache[tg_id].get("lead_id", 0)
+                                    amo_add_note(lead_id, f"📤 Исходящее от менеджера → {client['name']}:\n{msg}")
+                                result = {"status": "sent", "client": client["name"], "tg_id": tg_id}
                     elif tool == "update_deal":
                         result = director_update_deal(
                             inp["deal_id"],
