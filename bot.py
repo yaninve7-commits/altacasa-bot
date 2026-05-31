@@ -2,7 +2,7 @@
 ALTA CASA — AI Telegram Bot
 Бот для общения с клиентами. Claude AI + Notion CRM.
 
-Зависимости: pip install python-telegram-bot anthropic notion-client python-dotenv httpx
+Зависимости: pip install python-telegram-bot anthropic python-dotenv httpx
 """
 
 import os
@@ -21,7 +21,7 @@ from telegram.ext import (
     filters, ContextTypes
 )
 import anthropic
-from notion_client import Client as NotionClient
+# notion_client удалён — используем только amoCRM
 
 load_dotenv()
 
@@ -34,13 +34,13 @@ logger = logging.getLogger(__name__)
 # ── Конфиг ───────────────────────────────────────────────────────────────────
 TG_TOKEN        = os.getenv("TG_TOKEN")
 ANTHROPIC_KEY   = os.getenv("ANTHROPIC_API_KEY")
-NOTION_TOKEN    = os.getenv("NOTION_TOKEN")
-NOTION_DB_ID    = os.getenv("NOTION_CLIENTS_DB_ID")
+# notion_client удалён — используем только amoCRM
+
 MANAGER_CHAT_ID = os.getenv("MANAGER_CHAT_ID")
 CHANNEL_ID      = os.getenv("CHANNEL_ID", "@altacasacn")  # канал для постинга
 
 ai     = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
-notion = NotionClient(auth=NOTION_TOKEN)
+
 
 # ── Системный промпт ──────────────────────────────────────────────────────────
 with open("system_prompt.txt", "r", encoding="utf-8") as f:
