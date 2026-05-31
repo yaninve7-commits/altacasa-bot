@@ -1721,22 +1721,21 @@ async def _send_and_update(update, context, user, page_id, result, original_text
         except Exception as e:
             logger.error(f"Notion update error: {e}")
 
-    # Синхронизация с amoCRM (в отдельном потоке)
+    # Синхронизация с amoCRM
     if not is_owner(user):
-        import asyncio as _asyncio
-        _qual = result.get("qualification")
-        _interest = result.get("interest")
-        _budget = int(result["budget"]) if result.get("budget") else None
-        _asyncio.get_event_loop().run_in_executor(None, lambda: sync_to_amo(
-            tg_id=user.id,
-            name=user.full_name or "Клиент",
-            username=user.username or "",
-            message_text=original_text[:500],
-            bot_reply=result["reply"][:500],
-            qualification=_qual,
-            interest=_interest,
-            budget=_budget
-        ))
+        try:
+            sync_to_amo(
+                tg_id=user.id,
+                name=user.full_name or "Клиент",
+                username=user.username or "",
+                message_text=original_text[:500],
+                bot_reply=result["reply"][:500],
+                qualification=result.get("qualification"),
+                interest=result.get("interest"),
+                budget=int(result["budget"]) if result.get("budget") else None
+            )
+        except Exception as e:
+            logger.error(f"amoCRM sync exception: {e}")
 
     # Ответить клиенту
     await update.message.reply_text(result["reply"])
