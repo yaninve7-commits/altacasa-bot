@@ -474,7 +474,6 @@ AMO_STATUS_MAP = {
                                         "успешно":       142,       # Успешно реализовано (system)
                                             "отказ":         143,       # Закрыто и не реализовано (system)
                                             }
-}
 AMO_WON_STATUS  = 142  # Won (победа)
 AMO_LOST_STATUS = 143  # Lost (отказ)
 
