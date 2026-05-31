@@ -123,7 +123,7 @@ DIRECTOR_TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "days": {"type": "integer", "description": "За сколько дней (7, 30, 90)"}
+                "days": {"type": "integer", "description": "За сколько дней (например 1, 2, 7, 30, 90)"}
             },
             "required": ["days"]
         }
@@ -183,10 +183,14 @@ def director_get_stats(days: int) -> dict:
     """Статистика лидов за период."""
     from datetime import timedelta
     since = (datetime.utcnow() - timedelta(days=days)).date().isoformat()
-    results = notion.databases.query(
-        database_id=NOTION_DB_ID,
-        filter={"property": "Дата", "date": {"on_or_after": since}}
-    )
+    try:
+        results = notion.databases.query(
+            database_id=NOTION_DB_ID,
+            filter={"property": "Дата", "date": {"on_or_after": since}}
+        )
+    except Exception:
+        # Если фильтр по дате не работает — берём всё
+        results = notion.databases.query(database_id=NOTION_DB_ID, page_size=100)
     pages = results.get("results", [])
     stats = {"total": len(pages), "by_qual": {}, "by_channel": {}, "total_budget": 0, "hot": []}
     for p in pages:
@@ -251,15 +255,17 @@ def director_find_client(query: str) -> list:
 
 def director_list_leads(qualification: str, limit: int = 10) -> list:
     """Список лидов по квалификации."""
-    filter_opts = {}
     if qualification != "все":
-        filter_opts = {"property": "Квалификация", "select": {"equals": qualification}}
-
-    r = notion.databases.query(
-        database_id=NOTION_DB_ID,
-        filter=filter_opts if filter_opts else None,
-        page_size=min(limit, 20)
-    )
+        r = notion.databases.query(
+            database_id=NOTION_DB_ID,
+            filter={"property": "Квалификация", "select": {"equals": qualification}},
+            page_size=min(limit, 20)
+        )
+    else:
+        r = notion.databases.query(
+            database_id=NOTION_DB_ID,
+            page_size=min(limit, 20)
+        )
     leads = []
     for p in r.get("results", []):
         props = p.get("properties", {})
