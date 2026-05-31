@@ -834,6 +834,52 @@ async def handle_owner_director(update: Update, context: ContextTypes.DEFAULT_TY
                     elif tool == "send_to_client":
                         tg_id = inp["tg_id"]
                         text = inp["text"]
+
+                        # ── Валидация товара перед отправкой ─────────────────
+                        photo_urls_check = inp.get("photo_urls", [])
+                        buttons_check = inp.get("buttons", [])
+                        all_urls = photo_urls_check + [b.get("url","") for b in buttons_check]
+                        altacasa_urls = [u for u in all_urls if "altacasa.ru" in u]
+
+                        if altacasa_urls:
+                            # Извлекаем product key из URL или текста
+                            import re as _re
+                            product_key = None
+                            for url in altacasa_urls:
+                                m = _re.search(r'product(\d*)', url)
+                                if m:
+                                    product_key = url.split("/")[-1].replace(".html","")
+
+                            # Получаем интерес клиента из кеша диалогов
+                            client_history = dialogs.get(tg_id, [])
+                            client_interests = []
+                            for msg in client_history[-10:]:
+                                content = msg.get("content","") if isinstance(msg.get("content"), str) else ""
+                                for cat in ["диван","кресло","кровать","стол","стул","шкаф","тумба","гардероб"]:
+                                    if cat in content.lower():
+                                        client_interests.append(cat)
+
+                            # Категория отправляемого товара из текста
+                            sending_cats = []
+                            for cat in ["диван","кресло","кровать","стол","стул","шкаф","тумба","гардероб"]:
+                                if cat in text.lower() or any(cat in u.lower() for u in all_urls):
+                                    sending_cats.append(cat)
+
+                            # Если интересы известны и товар не совпадает — WARNING
+                            if client_interests and sending_cats:
+                                mismatch = not any(c in client_interests for c in sending_cats)
+                                if mismatch:
+                                    warning_msg = (
+                                        f"⚠️ ВНИМАНИЕ!\n"
+                                        f"Клиент интересовался: {', '.join(set(client_interests))}\n"
+                                        f"Вы отправляете: {', '.join(set(sending_cats))}\n\n"
+                                        f"Это намеренно? Сообщение всё равно отправлено."
+                                    )
+                                    await bot_ref.send_message(
+                                        chat_id=int(MANAGER_CHAT_ID),
+                                        text=warning_msg
+                                    )
+                        # ── конец валидации ───────────────────────────────────
                         photo_urls = inp.get("photo_urls", [])
                         buttons = inp.get("buttons", [])
 
