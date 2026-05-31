@@ -363,7 +363,8 @@ def director_find_client(query: str) -> list:
 
 DEALS_DB_ID = "36e698e7193a8092b378eeb45a969b84"  # Воронка сделок (Notion)
 AMO_TOKEN   = os.getenv("AMO_LONG_TOKEN", "")
-AMO_DOMAIN  = "yaninve7.amocrm.ru"
+AMO_DOMAIN  = "yaninve7.amocrm.ru"   # subdomain для UI
+AMO_API     = "api-b.amocrm.ru"      # реальный API домен из JWT
 
 
 def amo_get_leads(days: int, limit: int = 250) -> list:
@@ -415,8 +416,10 @@ def amo_request(method: str, path: str, data: dict = None) -> dict:
     """Универсальный запрос к amoCRM API."""
     import urllib.request, urllib.error
     if not AMO_TOKEN:
+        logger.error("amoCRM: AMO_LONG_TOKEN не настроен")
         return {"error": "AMO_LONG_TOKEN не настроен"}
-    url = f"https://{AMO_DOMAIN}/api/v4/{path}"
+    # Используем реальный API домен (не subdomain который делает редирект)
+    url = f"https://{AMO_API}/api/v4/{path}"
     headers = {
         "Authorization": f"Bearer {AMO_TOKEN}",
         "Content-Type": "application/json"
@@ -424,11 +427,16 @@ def amo_request(method: str, path: str, data: dict = None) -> dict:
     body = json.dumps(data).encode() if data else None
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
-            return json.loads(r.read()) if r.status not in [204] else {"status": "ok"}
+        with urllib.request.urlopen(req, timeout=15) as r:
+            raw = r.read()
+            logger.info(f"amoCRM {method} {path} → {r.status}")
+            return json.loads(raw) if raw else {"status": "ok"}
     except urllib.error.HTTPError as e:
-        return {"error": f"HTTP {e.code}: {e.read().decode()[:200]}"}
+        err_body = e.read().decode()[:300]
+        logger.error(f"amoCRM HTTP {e.code} {method} {path}: {err_body}")
+        return {"error": f"HTTP {e.code}: {err_body}"}
     except Exception as e:
+        logger.error(f"amoCRM error {method} {path}: {e}")
         return {"error": str(e)}
 
 
