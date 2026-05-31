@@ -280,76 +280,120 @@ def director_find_client(query: str) -> list:
     return clients
 
 
-DEALS_DB_ID = "36e698e7193a8092b378eeb45a969b84"  # Воронка сделок
+DEALS_DB_ID = "36e698e7193a8092b378eeb45a969b84"  # Воронка сделок (Notion)
+AMO_TOKEN   = os.getenv("AMO_LONG_TOKEN", "")
+AMO_DOMAIN  = "yaninve7.amocrm.ru"
+
+
+def amo_get_leads(days: int, limit: int = 250) -> list:
+    """Получить сделки из amoCRM за последние N дней."""
+    import time
+    if not AMO_TOKEN:
+        return []
+    since_ts = int(time.time()) - days * 86400
+    headers = {"Authorization": f"Bearer {AMO_TOKEN}"}
+    url = f"https://{AMO_DOMAIN}/api/v4/leads"
+    params = {
+        "limit": limit,
+        "filter[created_at][from]": since_ts,
+        "with": "contacts,loss_reason",
+        "order[created_at]": "desc"
+    }
+    try:
+        import urllib.request, urllib.parse
+        full_url = url + "?" + urllib.parse.urlencode(params)
+        req = urllib.request.Request(full_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            return data.get("_embedded", {}).get("leads", [])
+    except Exception as e:
+        logger.error(f"amoCRM API error: {e}")
+        return []
+
 
 def director_get_revenue_stats(days: int, group_by: str = "итого") -> dict:
-    """Статистика выручки из базы Воронка сделок."""
+    """Статистика выручки. Источник: amoCRM (основной) или Notion (fallback)."""
+
+    # ── amoCRM ────────────────────────────────────────────────────────────────
+    if AMO_TOKEN:
+        leads = amo_get_leads(days)
+        prev_leads = amo_get_leads(days * 2)
+        # prev_leads включает текущий период — убираем
+        import time
+        since_ts = int(time.time()) - days * 86400
+        prev_leads = [l for l in prev_leads if l.get("created_at", 0) < since_ts]
+
+        def calc_amo(deals):
+            total = 0
+            count = 0
+            by_status = {}
+            by_manager = {}
+            for d in deals:
+                price = d.get("price") or 0
+                total += price
+                count += 1
+                status = d.get("status_id", "?")
+                by_status[str(status)] = by_status.get(str(status), {"count": 0, "sum": 0})
+                by_status[str(status)]["count"] += 1
+                by_status[str(status)]["sum"] += price
+                # Менеджер
+                embedded = d.get("_embedded", {})
+                users = embedded.get("users", []) if isinstance(embedded, dict) else []
+                manager = users[0].get("name", "Не назначен") if users else "Не назначен"
+                by_manager[manager] = by_manager.get(manager, {"count": 0, "sum": 0})
+                by_manager[manager]["count"] += 1
+                by_manager[manager]["sum"] += price
+            return {"count": count, "total": total, "avg": total // count if count else 0,
+                    "by_status": by_status, "by_manager": by_manager}
+
+        cur = calc_amo(leads)
+        prv = calc_amo(prev_leads)
+        delta = cur["total"] - prv["total"]
+        delta_pct = round(delta / prv["total"] * 100) if prv["total"] else None
+
+        return {
+            "source": "amoCRM",
+            "period_days": days,
+            "current": cur,
+            "previous": prv,
+            "delta": delta,
+            "delta_pct": delta_pct,
+            "group_by": group_by
+        }
+
+    # ── Notion fallback ───────────────────────────────────────────────────────
     from datetime import timedelta
     now = datetime.utcnow()
     since = (now - timedelta(days=days)).date().isoformat()
-    since_prev = (now - timedelta(days=days * 2)).date().isoformat()
+    try:
+        r = notion.databases.query(
+            database_id=DEALS_DB_ID,
+            filter={"property": "Дедлайн", "date": {"on_or_after": since}}
+        )
+        deals = r.get("results", [])
+    except Exception:
+        r = notion.databases.query(database_id=DEALS_DB_ID, page_size=100)
+        deals = r.get("results", [])
 
-    def fetch_deals(date_from: str, date_to: str) -> list:
-        try:
-            r = notion.databases.query(
-                database_id=DEALS_DB_ID,
-                filter={"property": "Дедлайн", "date": {"on_or_after": date_from}}
-            )
-            return r.get("results", [])
-        except Exception:
-            # Без фильтра если нет дат
-            r = notion.databases.query(database_id=DEALS_DB_ID, page_size=100)
-            return r.get("results", [])
+    total_rub = sum(d.get("properties", {}).get("Сумма ₽", {}).get("number") or 0 for d in deals)
+    count = len(deals)
 
-    def calc_stats(deals: list) -> dict:
-        total_rub = 0
-        total_cny = 0
-        count = 0
-        by_stage = {}
-        by_manager = {}
-        for d in deals:
-            props = d.get("properties", {})
-            rub = props.get("Сумма ₽", {}).get("number") or 0
-            cny = props.get("Сумма (¥)", {}).get("number") or 0
-            stage = (props.get("Стадия", {}).get("status") or {}).get("name", "Не указана")
-            manager_arr = props.get("Менеджер", {}).get("people", [])
-            manager = manager_arr[0].get("name", "Не назначен") if manager_arr else "Не назначен"
-            total_rub += rub
-            total_cny += cny
-            count += 1
-            by_stage[stage] = by_stage.get(stage, {"count": 0, "sum_rub": 0})
-            by_stage[stage]["count"] += 1
-            by_stage[stage]["sum_rub"] += rub
-            by_manager[manager] = by_manager.get(manager, {"count": 0, "sum_rub": 0})
-            by_manager[manager]["count"] += 1
-            by_manager[manager]["sum_rub"] += rub
-        avg = total_rub // count if count else 0
-        return {
-            "count": count,
-            "total_rub": total_rub,
-            "total_cny": total_cny,
-            "avg_check": avg,
-            "by_stage": by_stage,
-            "by_manager": by_manager,
-        }
-
-    current = calc_stats(fetch_deals(since, now.date().isoformat()))
-    previous = calc_stats(fetch_deals(since_prev, since))
-
-    # Изменение
-    delta_count = current["count"] - previous["count"]
-    delta_rub = current["total_rub"] - previous["total_rub"]
-    delta_pct = round((delta_rub / previous["total_rub"] * 100)) if previous["total_rub"] else None
+    by_stage = {}
+    for d in deals:
+        props = d.get("properties", {})
+        stage = (props.get("Стадия", {}).get("status") or {}).get("name", "—")
+        rub = props.get("Сумма ₽", {}).get("number") or 0
+        by_stage[stage] = by_stage.get(stage, {"count": 0, "sum_rub": 0})
+        by_stage[stage]["count"] += 1
+        by_stage[stage]["sum_rub"] += rub
 
     return {
+        "source": "Notion (amoCRM токен не активен)",
         "period_days": days,
-        "current": current,
-        "previous": previous,
-        "delta_count": delta_count,
-        "delta_rub": delta_rub,
-        "delta_pct": delta_pct,
-        "group_by": group_by,
-        "source": "Notion — Воронка сделок (amoCRM планируется)"
+        "current": {"count": count, "total": total_rub, "avg": total_rub // count if count else 0, "by_stage": by_stage},
+        "previous": {},
+        "delta": None,
+        "delta_pct": None,
     }
 
 
