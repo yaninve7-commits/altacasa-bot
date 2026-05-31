@@ -763,18 +763,60 @@ def director_get_revenue_stats(days: int, group_by: str = "итого") -> dict:
 
 
 def director_list_leads(qualification: str, limit: int = 10) -> list:
-    """Список лидов по квалификации."""
-    if qualification != "все":
-        r = notion.databases.query(
-            database_id=NOTION_DB_ID,
-            filter={"property": "Квалификация", "select": {"equals": qualification}},
-            page_size=min(limit, 20)
-        )
-    else:
-        r = notion.databases.query(
-            database_id=NOTION_DB_ID,
-            page_size=min(limit, 20)
-        )
+    """Список лидов — из amoCRM (основной) или Notion (fallback)."""
+
+    # ── amoCRM ────────────────────────────────────────────────────────────────
+    if AMO_TOKEN:
+        import urllib.parse
+        # Маппинг квалификации → статус amoCRM (примерный)
+        status_filter = ""
+        if qualification == "Горячий":
+            # Ищем лиды в стадии переговоров/КП
+            pass  # фильтруем по pipeline stage позже
+
+        r = amo_request("GET", f"leads?limit={min(limit,50)}&with=contacts&order[created_at]=desc")
+        raw_leads = r.get("_embedded", {}).get("leads", [])
+
+        leads = []
+        for l in raw_leads:
+            contacts = l.get("_embedded", {}).get("contacts", []) if isinstance(l.get("_embedded"), dict) else []
+            client = contacts[0].get("name", "—") if contacts else "—"
+            price = l.get("price") or 0
+            created = l.get("created_at", 0)
+            from datetime import datetime as _dt
+            created_str = _dt.fromtimestamp(created).strftime("%d.%m.%Y %H:%M") if created else "—"
+            leads.append({
+                "id": l.get("id"),
+                "name": l.get("name", "—"),
+                "client": client,
+                "price": price,
+                "status_id": l.get("status_id"),
+                "created_at": created_str,
+                "source": "amoCRM"
+            })
+
+        # Фильтрация по qualification если нужно
+        if qualification == "Горячий":
+            # Горячие — не закрытые и с суммой > 0
+            leads = [l for l in leads if l.get("price", 0) > 0][:limit]
+        elif qualification != "все":
+            leads = leads[:limit]
+
+        return leads if leads else [{"note": "В amoCRM нет лидов за последнее время"}]
+
+    # ── Notion fallback ───────────────────────────────────────────────────────
+    try:
+        if qualification != "все":
+            r = notion.databases.query(
+                database_id=NOTION_DB_ID,
+                filter={"property": "Квалификация", "select": {"equals": qualification}},
+                page_size=min(limit, 20)
+            )
+        else:
+            r = notion.databases.query(database_id=NOTION_DB_ID, page_size=min(limit, 20))
+    except Exception as e:
+        return [{"error": f"Ошибка Notion: {e}"}]
+
     leads = []
     for p in r.get("results", []):
         props = p.get("properties", {})
@@ -785,7 +827,7 @@ def director_list_leads(qualification: str, limit: int = 10) -> list:
         budget = props.get("Бюджет ₽", {}).get("number")
         tg_id = props.get("Telegram ID", {}).get("number")
         leads.append({"name": name, "qual": qual, "interest": interest,
-                      "budget": budget, "tg_id": tg_id})
+                      "budget": budget, "tg_id": tg_id, "source": "Notion"})
     return leads
 
 
