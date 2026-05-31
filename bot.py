@@ -558,6 +558,43 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Нет поста для публикации. Сначала попроси написать пост.")
             return
 
+    # ── Проверка подтверждения КП от клиента ──────────────────────────────────
+    if user.id in pending_kp and text.strip().lower() in [
+        "да", "да!", "yes", "подходит", "согласен", "согласна",
+        "отлично", "хорошо", "берём", "берем", "ок", "ok", "👍"
+    ]:
+        kp_data = pending_kp[user.id]
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="upload_document")
+        try:
+            client_name = user.full_name or "Клиент"
+            pdf_bytes = await generate_kp_pdf(kp_data, client_name)
+            filename = f"КП_ALTA_CASA_{datetime.now().strftime('%d%m%Y')}.pdf"
+
+            # Отправляем PDF клиенту
+            from telegram import InputFile
+            import io
+            await context.bot.send_document(
+                chat_id=user.id,
+                document=InputFile(io.BytesIO(pdf_bytes), filename=filename),
+                caption=f"Коммерческое предложение ALTA CASA\n{kp_data['product']}\nИтого: {kp_data['total']:,} ₽".replace(',', ' ')
+            )
+
+            # Уведомляем менеджера
+            if kp_data.get("manager_id"):
+                await context.bot.send_message(
+                    chat_id=kp_data["manager_id"],
+                    text=f"✅ Клиент {client_name} (ID: {user.id}) подтвердил КП!\nКП отправлено."
+                )
+
+            del pending_kp[user.id]
+            logger.info(f"КП PDF отправлен клиенту {user.id}")
+        except Exception as e:
+            logger.error(f"PDF generation error: {e}")
+            await update.message.reply_text(
+                "Отлично! Передаю вашу заявку менеджеру — он свяжется с вами в ближайшее время."
+            )
+        return
+
     # ── Обычный клиент ─────────────────────────────────────────────────────────
     page_id = None
     try:
@@ -830,6 +867,162 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ── КП (Коммерческое предложение) ────────────────────────────────────────────
+
+# Хранилище ожидающих подтверждения КП: {client_tg_id: {данные КП}}
+pending_kp: dict[int, dict] = {}
+
+
+async def cmd_kp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /kp <tg_id клиента> <товар> <цена₽> [доставка₽]
+    Пример: /kp 283951945 "Диван MC-A68 3-местный кожа" 235000 8000
+    """
+    if not is_owner(update.effective_user):
+        return
+
+    args = context.args
+    if len(args) < 3:
+        await update.message.reply_text(
+            "📋 *Как отправить КП:*\n\n"
+            "`/kp <ID_клиента> <товар> <цена> [доставка]`\n\n"
+            "Пример:\n"
+            "`/kp 283951945 Диван MC-A68 3-местный 235000 8000`\n\n"
+            "ID клиента узнать: попроси клиента написать боту, "
+            "или посмотри в Notion → Telegram ID",
+            parse_mode="Markdown"
+        )
+        return
+
+    client_id = int(args[0])
+    price = int(args[-2]) if len(args) >= 4 else int(args[-1])
+    delivery = int(args[-1]) if len(args) >= 4 else 0
+    product = " ".join(args[1:-2]) if len(args) >= 4 else " ".join(args[1:-1])
+    total = price + delivery
+
+    # Сохраняем в ожидание
+    pending_kp[client_id] = {
+        "product": product,
+        "price": price,
+        "delivery": delivery,
+        "total": total,
+        "manager_id": update.effective_user.id,
+        "created_at": datetime.now().isoformat(),
+    }
+
+    # Отправляем клиенту
+    try:
+        msg = (
+            f"Здравствуйте!\n\n"
+            f"Мы подготовили расчёт по вашему запросу:\n\n"
+            f"📦 *{product}*\n"
+            f"💰 Стоимость: {price:,} ₽\n"
+        )
+        if delivery:
+            msg += f"🚚 Доставка: {delivery:,} ₽\n"
+        msg += (
+            f"━━━━━━━━━━━━━━\n"
+            f"💵 *Итого: {total:,} ₽*\n\n"
+            f"Вас устраивают условия? Ответьте *«Да»* — и я пришлю полное коммерческое предложение."
+        )
+        msg = msg.replace(",", " ")
+
+        await context.bot.send_message(
+            chat_id=client_id,
+            text=msg,
+            parse_mode="Markdown"
+        )
+        await update.message.reply_text(
+            f"✅ Расчёт отправлен клиенту (ID: {client_id})\n"
+            f"Товар: {product}\n"
+            f"Итого: {total:,} ₽\n\n"
+            f"Жду подтверждения от клиента...".replace(",", " ")
+        )
+        logger.info(f"КП отправлено клиенту {client_id}: {product} {total}₽")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка отправки: {e}")
+
+
+async def generate_kp_pdf(data: dict, client_name: str) -> bytes:
+    """Генерировать PDF коммерческого предложения."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.lib import colors
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    import io
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4,
+                            leftMargin=2*cm, rightMargin=2*cm,
+                            topMargin=2*cm, bottomMargin=2*cm)
+
+    styles = getSampleStyleSheet()
+    story = []
+
+    # Заголовок
+    title_style = ParagraphStyle('Title', parent=styles['Normal'],
+                                  fontSize=20, textColor=colors.HexColor('#1a1a2e'),
+                                  spaceAfter=6, fontName='Helvetica-Bold')
+    sub_style = ParagraphStyle('Sub', parent=styles['Normal'],
+                                fontSize=11, textColor=colors.grey, spaceAfter=20)
+    body_style = ParagraphStyle('Body', parent=styles['Normal'],
+                                 fontSize=11, spaceAfter=8, leading=16)
+
+    story.append(Paragraph("ALTA CASA", title_style))
+    story.append(Paragraph("Коммерческое предложение", sub_style))
+    story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor('#e0e0e0')))
+    story.append(Spacer(1, 0.5*cm))
+
+    # Клиент и дата
+    story.append(Paragraph(f"<b>Для:</b> {client_name}", body_style))
+    story.append(Paragraph(f"<b>Дата:</b> {datetime.now().strftime('%d.%m.%Y')}", body_style))
+    story.append(Spacer(1, 0.5*cm))
+
+    # Таблица с товаром
+    table_data = [
+        ['Наименование', 'Стоимость'],
+        [data['product'], f"{data['price']:,} ₽".replace(',', ' ')],
+    ]
+    if data['delivery']:
+        table_data.append(['Доставка', f"{data['delivery']:,} ₽".replace(',', ' ')])
+    table_data.append(['ИТОГО', f"{data['total']:,} ₽".replace(',', ' ')])
+
+    table = Table(table_data, colWidths=[12*cm, 4*cm])
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1a1a2e')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 11),
+        ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#f5f5f5')),
+        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+        ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e0e0e0')),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, colors.HexColor('#fafafa')]),
+        ('PADDING', (0, 0), (-1, -1), 8),
+    ]))
+    story.append(table)
+    story.append(Spacer(1, 1*cm))
+
+    # Условия
+    story.append(Paragraph("<b>Условия:</b>", body_style))
+    story.append(Paragraph("• Производство: 6–8 недель", body_style))
+    story.append(Paragraph("• Оплата: 30% предоплата, 70% перед отправкой", body_style))
+    story.append(Paragraph("• Гарантия: 12 месяцев", body_style))
+    story.append(Paragraph("• Белая таможня, доставка под ключ", body_style))
+    story.append(Spacer(1, 1*cm))
+
+    # Контакты
+    story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor('#e0e0e0')))
+    story.append(Spacer(1, 0.3*cm))
+    story.append(Paragraph("ALTA CASA | altacasa.ru | @altacasacn_bot", sub_style))
+
+    doc.build(story)
+    return buffer.getvalue()
+
+
 # ── Авто-посты в канал ────────────────────────────────────────────────────────
 
 # Темы для авто-постов — ротация
@@ -955,6 +1148,9 @@ def main():
     # Команды владельца — обучение
     app.add_handler(CommandHandler("teach",     cmd_teach))
     app.add_handler(CommandHandler("knowledge", cmd_knowledge))
+
+    # Команда КП
+    app.add_handler(CommandHandler("kp", cmd_kp))
 
     # Команды владельца — канал
     app.add_handler(CommandHandler("post",      cmd_post))
