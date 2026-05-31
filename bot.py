@@ -186,6 +186,22 @@ DIRECTOR_TOOLS = [
             "properties": {},
             "required": []
         }
+    },
+    {
+        "name": "get_revenue_stats",
+        "description": "Получить статистику выручки и сделок: суммы, количество, средний чек, по стадиям и менеджерам. Сравнение с предыдущим периодом.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {"type": "integer", "description": "Период в днях (1, 7, 30, 90)"},
+                "group_by": {
+                    "type": "string",
+                    "enum": ["менеджер", "стадия", "итого"],
+                    "description": "Группировка результатов"
+                }
+            },
+            "required": ["days"]
+        }
     }
 ]
 
@@ -262,6 +278,79 @@ def director_find_client(query: str) -> list:
             "dialog_preview": dialog_text
         })
     return clients
+
+
+DEALS_DB_ID = "36e698e7193a8092b378eeb45a969b84"  # Воронка сделок
+
+def director_get_revenue_stats(days: int, group_by: str = "итого") -> dict:
+    """Статистика выручки из базы Воронка сделок."""
+    from datetime import timedelta
+    now = datetime.utcnow()
+    since = (now - timedelta(days=days)).date().isoformat()
+    since_prev = (now - timedelta(days=days * 2)).date().isoformat()
+
+    def fetch_deals(date_from: str, date_to: str) -> list:
+        try:
+            r = notion.databases.query(
+                database_id=DEALS_DB_ID,
+                filter={"property": "Дедлайн", "date": {"on_or_after": date_from}}
+            )
+            return r.get("results", [])
+        except Exception:
+            # Без фильтра если нет дат
+            r = notion.databases.query(database_id=DEALS_DB_ID, page_size=100)
+            return r.get("results", [])
+
+    def calc_stats(deals: list) -> dict:
+        total_rub = 0
+        total_cny = 0
+        count = 0
+        by_stage = {}
+        by_manager = {}
+        for d in deals:
+            props = d.get("properties", {})
+            rub = props.get("Сумма ₽", {}).get("number") or 0
+            cny = props.get("Сумма (¥)", {}).get("number") or 0
+            stage = (props.get("Стадия", {}).get("status") or {}).get("name", "Не указана")
+            manager_arr = props.get("Менеджер", {}).get("people", [])
+            manager = manager_arr[0].get("name", "Не назначен") if manager_arr else "Не назначен"
+            total_rub += rub
+            total_cny += cny
+            count += 1
+            by_stage[stage] = by_stage.get(stage, {"count": 0, "sum_rub": 0})
+            by_stage[stage]["count"] += 1
+            by_stage[stage]["sum_rub"] += rub
+            by_manager[manager] = by_manager.get(manager, {"count": 0, "sum_rub": 0})
+            by_manager[manager]["count"] += 1
+            by_manager[manager]["sum_rub"] += rub
+        avg = total_rub // count if count else 0
+        return {
+            "count": count,
+            "total_rub": total_rub,
+            "total_cny": total_cny,
+            "avg_check": avg,
+            "by_stage": by_stage,
+            "by_manager": by_manager,
+        }
+
+    current = calc_stats(fetch_deals(since, now.date().isoformat()))
+    previous = calc_stats(fetch_deals(since_prev, since))
+
+    # Изменение
+    delta_count = current["count"] - previous["count"]
+    delta_rub = current["total_rub"] - previous["total_rub"]
+    delta_pct = round((delta_rub / previous["total_rub"] * 100)) if previous["total_rub"] else None
+
+    return {
+        "period_days": days,
+        "current": current,
+        "previous": previous,
+        "delta_count": delta_count,
+        "delta_rub": delta_rub,
+        "delta_pct": delta_pct,
+        "group_by": group_by,
+        "source": "Notion — Воронка сделок (amoCRM планируется)"
+    }
 
 
 def director_list_leads(qualification: str, limit: int = 10) -> list:
@@ -343,6 +432,11 @@ async def handle_owner_director(update: Update, context: ContextTypes.DEFAULT_TY
                         result = {"status": "sent", "tg_id": inp["tg_id"]}
                     elif tool == "get_channel_info":
                         result = {"channel": CHANNEL_ID, "note": "Данные канала доступны через Telegram API"}
+                    elif tool == "get_revenue_stats":
+                        result = director_get_revenue_stats(
+                            inp.get("days", 30),
+                            inp.get("group_by", "итого")
+                        )
                 except Exception as e:
                     result = {"error": str(e)}
 
