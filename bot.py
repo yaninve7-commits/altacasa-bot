@@ -168,12 +168,28 @@ DIRECTOR_TOOLS = [
     },
     {
         "name": "send_to_client",
-        "description": "Отправить сообщение клиенту от имени Юли",
+        "description": "Отправить сообщение клиенту: текст, фото, ссылки, кнопки",
         "input_schema": {
             "type": "object",
             "properties": {
                 "tg_id": {"type": "integer", "description": "Telegram ID клиента"},
-                "text": {"type": "string", "description": "Текст сообщения"}
+                "text": {"type": "string", "description": "Текст сообщения"},
+                "photo_urls": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Список URL фотографий товара (до 10 штук)"
+                },
+                "buttons": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string"},
+                            "url": {"type": "string"}
+                        }
+                    },
+                    "description": "Inline-кнопки: [{text: 'Подробнее', url: 'https://...'}, ...]"
+                }
             },
             "required": ["tg_id", "text"]
         }
@@ -781,11 +797,45 @@ async def handle_owner_director(update: Update, context: ContextTypes.DEFAULT_TY
                             inp.get("limit", 10)
                         )
                     elif tool == "send_to_client":
-                        await bot_ref.send_message(
-                            chat_id=inp["tg_id"],
-                            text=inp["text"]
-                        )
-                        result = {"status": "sent", "tg_id": inp["tg_id"]}
+                        tg_id = inp["tg_id"]
+                        text = inp["text"]
+                        photo_urls = inp.get("photo_urls", [])
+                        buttons = inp.get("buttons", [])
+
+                        # Строим inline-клавиатуру если есть кнопки
+                        reply_markup = None
+                        if buttons:
+                            from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+                            keyboard = [[InlineKeyboardButton(b["text"], url=b["url"])] for b in buttons if b.get("url")]
+                            if keyboard:
+                                reply_markup = InlineKeyboardMarkup(keyboard)
+
+                        if photo_urls:
+                            if len(photo_urls) == 1:
+                                # Одно фото с подписью
+                                await bot_ref.send_photo(
+                                    chat_id=tg_id,
+                                    photo=photo_urls[0],
+                                    caption=text[:1024],
+                                    reply_markup=reply_markup
+                                )
+                            else:
+                                # Несколько фото — media group
+                                from telegram import InputMediaPhoto
+                                media = [InputMediaPhoto(media=url, caption=text[:1024] if i == 0 else None)
+                                         for i, url in enumerate(photo_urls[:10])]
+                                await bot_ref.send_media_group(chat_id=tg_id, media=media)
+                                if reply_markup:
+                                    await bot_ref.send_message(chat_id=tg_id, text="👆 Посмотрите варианты выше", reply_markup=reply_markup)
+                        else:
+                            # Только текст с кнопками
+                            await bot_ref.send_message(
+                                chat_id=tg_id,
+                                text=text,
+                                reply_markup=reply_markup,
+                                parse_mode="Markdown"
+                            )
+                        result = {"status": "sent", "tg_id": tg_id, "photos": len(photo_urls), "buttons": len(buttons)}
                     elif tool == "get_channel_info":
                         result = {"channel": CHANNEL_ID, "note": "Данные канала доступны через Telegram API"}
                     elif tool == "update_deal":
