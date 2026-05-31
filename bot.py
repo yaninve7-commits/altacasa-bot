@@ -400,8 +400,8 @@ def director_find_client(query: str) -> list:
 
 DEALS_DB_ID = "36e698e7193a8092b378eeb45a969b84"  # Воронка сделок (Notion)
 AMO_TOKEN   = os.getenv("AMO_LONG_TOKEN", "")
-AMO_DOMAIN  = "yaninve7.amocrm.ru"   # subdomain для UI
-AMO_API     = "api-b.amocrm.ru"      # реальный API домен из JWT
+AMO_DOMAIN  = "yaninve7.amocrm.ru"
+AMO_API     = "yaninve7.amocrm.ru"   # используем subdomain — он принимает токен
 
 
 def amo_get_leads(days: int, limit: int = 250) -> list:
