@@ -106,6 +106,240 @@ def save_knowledge(entry: str):
 def get_system_prompt() -> str:
     return BASE_PROMPT + load_knowledge()
 
+
+# ── Director Mode — AI-директор для владельца ────────────────────────────────
+
+DIRECTOR_SYSTEM = """Ты — персональный AI-директор компании ALTA CASA.
+Ты разговариваешь с владельцем бизнеса. Отвечай коротко, по делу, как опытный COO.
+Используй данные которые получаешь через инструменты.
+Всегда давай конкретные цифры и факты, не общие слова.
+Если нужно — предлагай действия: написать клиенту, создать пост, отправить КП.
+Отвечай на русском."""
+
+DIRECTOR_TOOLS = [
+    {
+        "name": "get_stats",
+        "description": "Получить статистику лидов за период: количество, квалификация, бюджеты, каналы",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {"type": "integer", "description": "За сколько дней (7, 30, 90)"}
+            },
+            "required": ["days"]
+        }
+    },
+    {
+        "name": "find_client",
+        "description": "Найти клиента по имени, username или Telegram ID",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Имя, username или ID клиента"}
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "list_leads",
+        "description": "Получить список лидов по квалификации",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "qualification": {
+                    "type": "string",
+                    "enum": ["Горячий", "Тёплый", "Холодный", "Передан менеджеру", "все"],
+                    "description": "Фильтр по квалификации"
+                },
+                "limit": {"type": "integer", "description": "Сколько записей (макс 20)"}
+            },
+            "required": ["qualification"]
+        }
+    },
+    {
+        "name": "send_to_client",
+        "description": "Отправить сообщение клиенту от имени Юли",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tg_id": {"type": "integer", "description": "Telegram ID клиента"},
+                "text": {"type": "string", "description": "Текст сообщения"}
+            },
+            "required": ["tg_id", "text"]
+        }
+    },
+    {
+        "name": "get_channel_info",
+        "description": "Получить информацию о канале: подписчики, последние посты",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    }
+]
+
+
+def director_get_stats(days: int) -> dict:
+    """Статистика лидов за период."""
+    from datetime import timedelta
+    since = (datetime.utcnow() - timedelta(days=days)).date().isoformat()
+    results = notion.databases.query(
+        database_id=NOTION_DB_ID,
+        filter={"property": "Дата", "date": {"on_or_after": since}}
+    )
+    pages = results.get("results", [])
+    stats = {"total": len(pages), "by_qual": {}, "by_channel": {}, "total_budget": 0, "hot": []}
+    for p in pages:
+        props = p.get("properties", {})
+        qual = props.get("Квалификация", {}).get("select", {})
+        qual_name = qual.get("name", "Не указана") if qual else "Не указана"
+        stats["by_qual"][qual_name] = stats["by_qual"].get(qual_name, 0) + 1
+        ch = props.get("Канал", {}).get("select", {})
+        ch_name = ch.get("name", "Не указан") if ch else "Не указан"
+        stats["by_channel"][ch_name] = stats["by_channel"].get(ch_name, 0) + 1
+        budget = props.get("Бюджет ₽", {}).get("number") or 0
+        stats["total_budget"] += budget
+        if qual_name == "Горячий":
+            name_arr = props.get("Name", {}).get("title", [])
+            name = name_arr[0]["plain_text"] if name_arr else "—"
+            tg_id = props.get("Telegram ID", {}).get("number")
+            stats["hot"].append({"name": name, "budget": budget, "tg_id": tg_id})
+    return stats
+
+
+def director_find_client(query: str) -> list:
+    """Найти клиента."""
+    results = []
+    # Поиск по имени
+    try:
+        r = notion.databases.query(
+            database_id=NOTION_DB_ID,
+            filter={"property": "Name", "title": {"contains": query}}
+        )
+        results.extend(r.get("results", []))
+    except Exception:
+        pass
+    # Поиск по TG ID если число
+    if query.lstrip("-").isdigit():
+        try:
+            r = notion.databases.query(
+                database_id=NOTION_DB_ID,
+                filter={"property": "Telegram ID", "number": {"equals": int(query)}}
+            )
+            results.extend(r.get("results", []))
+        except Exception:
+            pass
+    clients = []
+    for p in results[:5]:
+        props = p.get("properties", {})
+        name_arr = props.get("Name", {}).get("title", [])
+        name = name_arr[0]["plain_text"] if name_arr else "—"
+        qual = (props.get("Квалификация", {}).get("select") or {}).get("name", "—")
+        interest = (props.get("Интерес", {}).get("select") or {}).get("name", "—")
+        budget = props.get("Бюджет ₽", {}).get("number")
+        tg_id = props.get("Telegram ID", {}).get("number")
+        tg_url = props.get("Telegram", {}).get("url", "—")
+        dialog = (props.get("Диалог с ботом", {}).get("rich_text") or [{}])
+        dialog_text = dialog[0].get("plain_text", "")[-300:] if dialog else ""
+        clients.append({
+            "name": name, "qual": qual, "interest": interest,
+            "budget": budget, "tg_id": tg_id, "tg_url": tg_url,
+            "dialog_preview": dialog_text
+        })
+    return clients
+
+
+def director_list_leads(qualification: str, limit: int = 10) -> list:
+    """Список лидов по квалификации."""
+    filter_opts = {}
+    if qualification != "все":
+        filter_opts = {"property": "Квалификация", "select": {"equals": qualification}}
+
+    r = notion.databases.query(
+        database_id=NOTION_DB_ID,
+        filter=filter_opts if filter_opts else None,
+        page_size=min(limit, 20)
+    )
+    leads = []
+    for p in r.get("results", []):
+        props = p.get("properties", {})
+        name_arr = props.get("Name", {}).get("title", [])
+        name = name_arr[0]["plain_text"] if name_arr else "—"
+        qual = (props.get("Квалификация", {}).get("select") or {}).get("name", "—")
+        interest = (props.get("Интерес", {}).get("select") or {}).get("name", "—")
+        budget = props.get("Бюджет ₽", {}).get("number")
+        tg_id = props.get("Telegram ID", {}).get("number")
+        leads.append({"name": name, "qual": qual, "interest": interest,
+                      "budget": budget, "tg_id": tg_id})
+    return leads
+
+
+async def handle_owner_director(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    """Director Mode — владелец задаёт вопросы о бизнесе."""
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+
+    messages = [{"role": "user", "content": text}]
+    bot_ref = context.bot
+
+    # Цикл tool_use
+    for _ in range(5):  # максимум 5 вызовов инструментов
+        response = ai.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1500,
+            system=DIRECTOR_SYSTEM,
+            tools=DIRECTOR_TOOLS,
+            messages=messages
+        )
+
+        if response.stop_reason == "end_turn":
+            # Финальный ответ
+            reply = "".join(b.text for b in response.content if hasattr(b, "text"))
+            await update.message.reply_text(reply)
+            return
+
+        if response.stop_reason == "tool_use":
+            messages.append({"role": "assistant", "content": response.content})
+            tool_results = []
+
+            for block in response.content:
+                if block.type != "tool_use":
+                    continue
+                tool = block.name
+                inp = block.input
+                result = None
+
+                try:
+                    if tool == "get_stats":
+                        result = director_get_stats(inp.get("days", 7))
+                    elif tool == "find_client":
+                        result = director_find_client(inp.get("query", ""))
+                    elif tool == "list_leads":
+                        result = director_list_leads(
+                            inp.get("qualification", "все"),
+                            inp.get("limit", 10)
+                        )
+                    elif tool == "send_to_client":
+                        await bot_ref.send_message(
+                            chat_id=inp["tg_id"],
+                            text=inp["text"]
+                        )
+                        result = {"status": "sent", "tg_id": inp["tg_id"]}
+                    elif tool == "get_channel_info":
+                        result = {"channel": CHANNEL_ID, "note": "Данные канала доступны через Telegram API"}
+                except Exception as e:
+                    result = {"error": str(e)}
+
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": json.dumps(result, ensure_ascii=False, default=str)
+                })
+
+            messages.append({"role": "user", "content": tool_results})
+
+    await update.message.reply_text("Не удалось получить данные. Попробуй переформулировать.")
+
+
 # ── Хранилище диалогов ────────────────────────────────────────────────────────
 dialogs: dict[int, list[dict]] = {}
 MAX_HISTORY = 20
@@ -557,6 +791,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await update.message.reply_text("Нет поста для публикации. Сначала попроси написать пост.")
             return
+
+        # ── Director Mode — всё остальное от владельца идёт к AI-директору ──────
+        await handle_owner_director(update, context, text)
+        return
 
     # ── Проверка подтверждения КП от клиента ──────────────────────────────────
     if user.id in pending_kp and text.strip().lower() in [
