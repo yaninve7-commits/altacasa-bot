@@ -1610,7 +1610,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Отлично! Передаю вашу заявку менеджеру — он свяжется с вами в ближайшее время."
             )
         return
-if note and result\.get\("_embedded", \{\}\.get\("leads"))    # ── Проверка внешних ссылок ────────────────────────────────────────────────
     import re
     urls_in_text = re.findall(r'https?://[^\s]+', text)
     has_external_link = any(
