@@ -1637,7 +1637,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     load_history_from_amo(user.id)
-    result = ask_claude(user.id, text + extra_context)    result = ask_claude(user.id, text + extra_context)
+    result = ask_claude(user.id, text + extra_context)
 
     # Если внешняя ссылка — тихо форвардим тебе (без эскалации в чат клиента)
     if has_external_link and MANAGER_CHAT_ID:
