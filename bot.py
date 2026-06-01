@@ -574,15 +574,10 @@ def director_create_deal(name: str, client_name: str, price: int = 0, note: str 
         deal_data[0]["pipeline_id"] = pipe_info["pipeline_id"]
 
     result = amo_request("POST", "leads/complex", deal_data)
-
-    if note and result.get("_embedded", {}).get("leads"):
-        deal_id = result["_embedded"]["leads"][0]["id"]
-        amo_request("POST", "notes", [{
-            "entity_id": deal_id,
-            "note_type": "common",
-            "params": {"text": note},
-            "entity_type": "leads"
-        }])
+    leads = result if isinstance(result, list) else result.get("_embedded", {}).get("leads", [])
+    if note and leads:
+            deal_id = leads[0]["id"]
+                amo_request("POST", "notes", [{"entity_id": deal_id, "note_type": "common", "params": {"text": note}, "entity_type": "leads"}])
 
     return result
 
@@ -1615,8 +1610,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Отлично! Передаю вашу заявку менеджеру — он свяжется с вами в ближайшее время."
             )
         return
-
-    # ── Проверка внешних ссылок ────────────────────────────────────────────────
+if note and result\.get\("_embedded", \{\}\.get\("leads"))    # ── Проверка внешних ссылок ────────────────────────────────────────────────
     import re
     urls_in_text = re.findall(r'https?://[^\s]+', text)
     has_external_link = any(
