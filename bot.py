@@ -325,37 +325,53 @@ DIRECTOR_TOOLS = [
 
 
 def director_get_stats(days: int) -> dict:
-    """Статистика лидов за период."""
-    from datetime import timedelta
-    since = (datetime.utcnow() - timedelta(days=days)).date().isoformat()
-    try:
-        results = notion.databases.query(
-            database_id=NOTION_DB_ID,
-            filter={"property": "Дата", "date": {"on_or_after": since}}
-        )
-    except Exception:
-        # Если фильтр по дате не работает — берём всё
-        results = notion.databases.query(database_id=NOTION_DB_ID, page_size=100)
-    pages = results.get("results", [])
-    stats = {"total": len(pages), "by_qual": {}, "by_channel": {}, "total_budget": 0, "hot": []}
-    for p in pages:
-        props = p.get("properties", {})
-        qual = props.get("Квалификация", {}).get("select", {})
-        qual_name = qual.get("name", "Не указана") if qual else "Не указана"
-        stats["by_qual"][qual_name] = stats["by_qual"].get(qual_name, 0) + 1
-        ch = props.get("Канал", {}).get("select", {})
-        ch_name = ch.get("name", "Не указан") if ch else "Не указан"
-        stats["by_channel"][ch_name] = stats["by_channel"].get(ch_name, 0) + 1
-        budget = props.get("Бюджет ₽", {}).get("number") or 0
-        stats["total_budget"] += budget
-        if qual_name == "Горячий":
-            name_arr = props.get("Name", {}).get("title", [])
-            name = name_arr[0]["plain_text"] if name_arr else "—"
-            tg_id = props.get("Telegram ID", {}).get("number")
-            stats["hot"].append({"name": name, "budget": budget, "tg_id": tg_id})
+    """Статистика лидов за период — из amoCRM с квалификациями."""
+    leads = amo_get_leads(days, limit=250)
+
+    QUAL_MAP = {
+        86187794: "Холодный",
+        86187798: "Холодный",
+        86187802: "Тёплый",
+        86187806: "Тёплый",
+        86187810: "Горячий",
+        86187814: "Горячий",
+        86187818: "Передан менеджеру",
+        86187822: "Передан менеджеру",
+        142: "Успешно",
+        143: "Отказ",
+    }
+
+    stats = {
+        "total": len(leads),
+        "by_qual": {},
+        "total_budget": 0,
+        "hot": [],
+        "source": "amoCRM",
+        "period_days": days
+    }
+
+    for l in leads:
+        status_id = l.get("status_id", 0)
+        qual = QUAL_MAP.get(status_id, "Неизвестно")
+        price = l.get("price") or 0
+
+        if qual not in stats["by_qual"]:
+            stats["by_qual"][qual] = {"count": 0, "budget": 0}
+        stats["by_qual"][qual]["count"] += 1
+        stats["by_qual"][qual]["budget"] += price
+        stats["total_budget"] += price
+
+        if qual in ("Горячий", "Передан менеджеру"):
+            contacts = (l.get("_embedded") or {}).get("contacts", [])
+            client = contacts[0].get("name", "—") if contacts else "—"
+            stats["hot"].append({
+                "name": client,
+                "budget": price,
+                "lead_id": l.get("id"),
+                "qual": qual
+            })
+
     return stats
-
-
 def director_find_client(query: str) -> list:
     """Найти клиента."""
     results = []
