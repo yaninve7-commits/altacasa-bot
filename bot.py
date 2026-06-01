@@ -1636,7 +1636,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Notion error: {e}")
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    result = ask_claude(user.id, text + extra_context)
+    load_history_from_amo(user.id)
+    result = ask_claude(user.id, text + extra_context)    result = ask_claude(user.id, text + extra_context)
 
     # Если внешняя ссылка — тихо форвардим тебе (без эскалации в чат клиента)
     if has_external_link and MANAGER_CHAT_ID:
@@ -1678,6 +1679,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo = update.message.photo[-1]
         image_data = await download_photo(context.bot, photo.file_id)
         prompt = caption if caption else "Клиент прислал фото товара который хочет найти или купить. Ответь согласно правилам работы с фото."
+        load_history_from_amo(user.id)
         result = ask_claude(user.id, prompt, image_data=image_data)
         # Фото от клиента всегда эскалируем владельцу
         result["escalate"] = True
@@ -1711,6 +1713,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prompt += f" с подписью: {caption}"
     prompt += ". Ответь как менеджер — уточни что это и как можешь помочь."
 
+    load_history_from_amo(user.id)
     result = ask_claude(user.id, prompt)
     await _send_and_update(update, context, user, page_id, result, f"[ФАЙЛ] {doc.file_name}")
 
