@@ -1420,12 +1420,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     product_key = context.args[0] if context.args else None
     product_ctx = get_product_context(product_key) if product_key else ""
 
-    try:
-        page_id = get_or_create_client(user.id, user.full_name or "Клиент", user.username or "")
-        label = f"[START:{product_key}]" if product_key else "[START]"
-        update_client(page_id, f"{label} {datetime.now():%Y-%m-%d %H:%M}")
-    except Exception as e:
-        logger.error(f"Notion /start error: {e}")
+    # amoCRM создаст контакт при первом сообщении
 
     if product_ctx:
         # Есть контекст товара — просим Claude написать персонализированное приветствие
@@ -1516,6 +1511,43 @@ def detect_owner_intent(text: str) -> str | None:
 
     return None
 
+
+
+
+def load_history_from_amo(tg_id: int) -> bool:
+    """Загрузить историю диалога из amoCRM при рестарте бота."""
+    if tg_id in dialogs and dialogs[tg_id]:
+        return False
+    cache = _amo_client_cache.get(tg_id)
+    if not cache:
+        return False
+    lead_id = cache.get("lead_id", 0)
+    if not lead_id:
+        return False
+    try:
+        r = amo_request("GET", f"leads/{lead_id}/notes?limit=30&order[id]=desc")
+        notes = r.get("_embedded", {}).get("notes", [])
+        history = []
+        for note in reversed(notes):
+            text = note.get("params", {}).get("text", "")
+            if not text:
+                continue
+            for line in text.strip().split("\n"):
+                if "👤" in line[:5] and ": " in line:
+                    c = line.split(": ", 1)[1].strip()
+                    if c:
+                        history.append({"role": "user", "content": c})
+                elif "🤖 Юля: " in line[:12]:
+                    c = line.split("Юля: ", 1)[-1].strip()
+                    if c:
+                        history.append({"role": "assistant", "content": c})
+        if history:
+            dialogs[tg_id] = history[-MAX_HISTORY:]
+            logger.info(f"История из amoCRM для {tg_id}: {len(history)} сообщений")
+            return True
+    except Exception as e:
+        logger.error(f"load_history_from_amo error: {e}")
+    return False
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -1638,11 +1670,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         extra_context = "\n[СИСТЕМА: клиент прислал ссылку НЕ с нашего сайта. Применяй правило эскалации для внешних ссылок.]"
 
     # ── Обычный клиент ─────────────────────────────────────────────────────────
-    page_id = None
-    try:
-        page_id = get_or_create_client(user.id, name, user.username or "")
-    except Exception as e:
-        logger.error(f"Notion error: {e}")
+
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     load_history_from_amo(user.id)
@@ -1664,7 +1692,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         # НЕ ставим escalate=True — Юля продолжает вести диалог
 
-    await _send_and_update(update, context, user, page_id, result, text)
+    await _send_and_update(update, context, user, result, text)
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1675,11 +1703,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"[{user.id}] {name}: [ФОТО] {caption}")
 
-    page_id = None
-    try:
-        page_id = get_or_create_client(user.id, name, user.username or "")
-    except Exception as e:
-        logger.error(f"Notion error: {e}")
+
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
@@ -1697,7 +1721,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result = {"reply": "Получила ваше фото! Уточните, что именно вас интересует?",
                   "qualification": None, "interest": None, "budget": None, "escalate": False}
 
-    await _send_and_update(update, context, user, page_id, result, f"[ФОТО] {caption}")
+    await _send_and_update(update, context, user, result, f"[ФОТО] {caption}")
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1709,11 +1733,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"[{user.id}] {name}: [ФАЙЛ] {doc.file_name}")
 
-    page_id = None
-    try:
-        page_id = get_or_create_client(user.id, name, user.username or "")
-    except Exception as e:
-        logger.error(f"Notion error: {e}")
+
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
@@ -1724,10 +1744,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     load_history_from_amo(user.id)
     result = ask_claude(user.id, prompt)
-    await _send_and_update(update, context, user, page_id, result, f"[ФАЙЛ] {doc.file_name}")
+    await _send_and_update(update, context, user, result, f"[ФАЙЛ] {doc.file_name}")
 
 
-async def _send_and_update(update, context, user, page_id, result, original_text):
+async def _send_and_update(update, context, user, result, original_text):
     """Отправить ответ клиенту и обновить Notion."""
     # Уведомить менеджера при эскалации — ТОЛЬКО ОДИН РАЗ на клиента
     if result["escalate"] and MANAGER_CHAT_ID and user.id not in _escalated_clients:
@@ -1767,22 +1787,7 @@ async def _send_and_update(update, context, user, page_id, result, original_text
         except Exception as e:
             logger.error(f"Escalation notify error: {e}")
 
-    # Обновить Notion
-    if page_id:
-        try:
-            history = dialogs.get(user.id, [])
-            dialog_text = "\n".join(
-                f"{'👤' if m['role']=='user' else '🤖'} {m['content'] if isinstance(m['content'], str) else '[медиа]'}"
-                for m in history[-10:]
-            )
-            update_client(page_id, dialog_text,
-                          history=history,
-                          qualification=result["qualification"],
-                          interest=result["interest"],
-                          budget=result["budget"],
-                          escalate=result["escalate"])
-        except Exception as e:
-            logger.error(f"Notion update error: {e}")
+
 
     # Синхронизация с amoCRM
     if not is_owner(user):
