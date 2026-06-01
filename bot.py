@@ -577,7 +577,7 @@ def director_create_deal(name: str, client_name: str, price: int = 0, note: str 
     leads = result if isinstance(result, list) else result.get("_embedded", {}).get("leads", [])
     if note and leads:
             deal_id = leads[0]["id"]
-                amo_request("POST", "notes", [{"entity_id": deal_id, "note_type": "common", "params": {"text": note}, "entity_type": "leads"}])
+            amo_request("POST", "notes", [{"entity_id": deal_id, "note_type": "common", "params": {"text": note}, "entity_type": "leads"}])
 
     return result
 
