@@ -1917,27 +1917,32 @@ async def cmd_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_owner_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Если владелец присылает фото с подписью /post_photo — публикуем в канал."""
+    """Владелец присылает фото — публикуем в канал. Любое фото = пост."""
     user = update.effective_user
     caption = update.message.caption or ""
+    real_caption = caption.replace("/post_photo", "").strip()
 
-    if is_owner(user) and "/post_photo" in caption:
-        real_caption = caption.replace("/post_photo", "").strip()
+    photo = update.message.photo[-1]
+
+    if real_caption:
+        # Есть подпись — сразу публикуем
         try:
-            photo = update.message.photo[-1]
-            msg = await context.bot.send_photo(
+            await context.bot.send_photo(
                 chat_id=CHANNEL_ID,
                 photo=photo.file_id,
                 caption=real_caption,
                 parse_mode="Markdown"
             )
-            await update.message.reply_text(f"✅ Фото опубликовано в {CHANNEL_ID}!", parse_mode="Markdown")
+            await update.message.reply_text(f"✅ Пост с фото опубликован в {CHANNEL_ID}!")
         except Exception as e:
             await update.message.reply_text(f"❌ Ошибка: {e}")
-        return
-
-    # Иначе — обычная обработка фото от клиента
-    await handle_photo(update, context)
+    else:
+        # Нет подписи — просим текст
+        context.user_data["pending_photo_id"] = photo.file_id
+        await update.message.reply_text(
+            "📸 Фото получено! Напиши подпись — опубликую в канал.\n"
+            "Или напиши /skip чтобы опубликовать без подписи."
+        )
 
 
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
