@@ -1559,6 +1559,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Ã¢ÂÂÃ¢ÂÂ ÃÂÃÂ»ÃÂ°ÃÂ´ÃÂµÃÂ»ÃÂµÃÂ: ÃÂÃÂ°ÃÂÃÂ¿ÃÂ¾ÃÂ·ÃÂ½ÃÂ°ÃÂÃÂ¼ ÃÂ½ÃÂ°ÃÂ¼ÃÂµÃÂÃÂµÃÂ½ÃÂ¸ÃÂµ ÃÂ±ÃÂµÃÂ· ÃÂºÃÂ¾ÃÂ¼ÃÂ°ÃÂ½ÃÂ´ Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
     if is_owner(user):
+        # ── Ожидаем подпись к отложенному фото ──────────────────────────
+        if context.user_data.get("pending_photo"):
+            photo_id = context.user_data.pop("pending_photo")
+            import re as _re
+            btn_pattern = _re.compile(r'\[([^\[\]]+)\|(https?://[^\]]+)\]')
+            buttons_found = btn_pattern.findall(text)
+            text_clean = btn_pattern.sub("", text).strip()
+            reply_markup = None
+            if buttons_found:
+                from telegram import InlineKeyboardButton, InlineKeyboardMarkup as IKM
+                kb = [[InlineKeyboardButton(b[0], url=b[1])] for b in buttons_found]
+                reply_markup = IKM(kb)
+            try:
+                msg = await context.bot.send_photo(
+                    chat_id=CHANNEL_ID,
+                    photo=photo_id,
+                    caption=text_clean if text_clean else None,
+                    reply_markup=reply_markup
+                )
+                post_link = f"https://t.me/{str(CHANNEL_ID).lstrip('@')}/{msg.message_id}"
+                await update.message.reply_text(f"✅ Пост опубликован!\n🔗 {post_link}")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Ошибка: {e}")
+            return
+        # ────────────────────────────────────────────────────────────────
         intent = detect_owner_intent(text)
 
         if intent == "post":
@@ -1786,6 +1811,15 @@ async def _send_and_update(update, context, user, result, original_text):
                 chat_id=int(MANAGER_CHAT_ID),
                 text=msg
             )
+            # Если клиент прислал фото — форвардим боссу
+            if update.message.photo:
+                photo = update.message.photo[-1]
+                caption_text = update.message.caption or ""
+                await context.bot.send_photo(
+                    chat_id=int(MANAGER_CHAT_ID),
+                    photo=photo.file_id,
+                    caption=f"📸 Фото от клиента {user.full_name}" + (f"\nПодпись: {caption_text}" if caption_text else "")
+                )
             # ÃÂÃÂ¾ÃÂ¼ÃÂµÃÂÃÂ°ÃÂµÃÂ¼ ÃÂÃÂÃÂ¾ ÃÂÃÂ¶ÃÂµ ÃÂÃÂ²ÃÂµÃÂ´ÃÂ¾ÃÂ¼ÃÂ¸ÃÂ»ÃÂ¸ Ã¢ÂÂ ÃÂ½ÃÂµ ÃÂ±ÃÂÃÂ´ÃÂµÃÂ¼ ÃÂÃÂ¿ÃÂ°ÃÂ¼ÃÂ¸ÃÂÃÂ
             _escalated_clients.add(user.id)
         except Exception as e:
@@ -1815,8 +1849,10 @@ async def _send_and_update(update, context, user, result, original_text):
 
 # Ã¢ÂÂÃ¢ÂÂ ÃÂÃÂ°ÃÂ½ÃÂ°ÃÂ»: ÃÂºÃÂ¾ÃÂ¼ÃÂ°ÃÂ½ÃÂ´ÃÂ ÃÂ²ÃÂ»ÃÂ°ÃÂ´ÃÂµÃÂ»ÃÂÃÂÃÂ° Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
 
+OWNER_ID = "8828678082"
+
 def is_owner(user) -> bool:
-    return str(user.id) == str(MANAGER_CHAT_ID)
+    return str(user.id) == OWNER_ID
 
 
 async def cmd_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1918,27 +1954,67 @@ async def cmd_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_owner_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ÃÂÃÂÃÂ»ÃÂ¸ ÃÂ²ÃÂ»ÃÂ°ÃÂ´ÃÂµÃÂ»ÃÂµÃÂ ÃÂ¿ÃÂÃÂ¸ÃÂÃÂÃÂ»ÃÂ°ÃÂµÃÂ ÃÂÃÂ¾ÃÂÃÂ¾ ÃÂ ÃÂ¿ÃÂ¾ÃÂ´ÃÂ¿ÃÂ¸ÃÂÃÂÃÂ /post_photo Ã¢ÂÂ ÃÂ¿ÃÂÃÂ±ÃÂ»ÃÂ¸ÃÂºÃÂÃÂµÃÂ¼ ÃÂ² ÃÂºÃÂ°ÃÂ½ÃÂ°ÃÂ»."""
+    """Владелец отправил фото — публикуем пост в канал."""
     user = update.effective_user
-    caption = update.message.caption or ""
 
-    if is_owner(user) and "/post_photo" in caption:
-        real_caption = caption.replace("/post_photo", "").strip()
+    # Если не владелец — передаём в handle_photo как клиент
+    if not is_owner(user):
+        await handle_photo(update, context)
+        return
+
+    caption = update.message.caption or ""
+    clean_caption = caption.replace("/post_photo", "").strip()
+
+    # Парсим кнопки формата [Текст|URL]
+    import re as _re
+    btn_pattern = _re.compile(r'\[([^\[\]]+)\|(https?://[^\]]+)\]')
+    buttons_found = btn_pattern.findall(clean_caption)
+    text_clean = btn_pattern.sub("", clean_caption).strip()
+    reply_markup = None
+    if buttons_found:
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup as IKM
+        kb = [[InlineKeyboardButton(b[0], url=b[1])] for b in buttons_found]
+        reply_markup = IKM(kb)
+
+    photo = update.message.photo[-1]
+
+    if text_clean:
+        # Есть подпись — публикуем сразу
         try:
-            photo = update.message.photo[-1]
             msg = await context.bot.send_photo(
                 chat_id=CHANNEL_ID,
                 photo=photo.file_id,
-                caption=real_caption,
-                parse_mode="Markdown"
+                caption=text_clean,
+                reply_markup=reply_markup
             )
-            await update.message.reply_text(f"Ã¢ÂÂ ÃÂ¤ÃÂ¾ÃÂÃÂ¾ ÃÂ¾ÃÂ¿ÃÂÃÂ±ÃÂ»ÃÂ¸ÃÂºÃÂ¾ÃÂ²ÃÂ°ÃÂ½ÃÂ¾ ÃÂ² {CHANNEL_ID}!", parse_mode="Markdown")
+            post_link = f"https://t.me/{str(CHANNEL_ID).lstrip('@')}/{msg.message_id}"
+            await update.message.reply_text(f"✅ Пост опубликован!\n🔗 {post_link}")
         except Exception as e:
-            await update.message.reply_text(f"Ã¢ÂÂ ÃÂÃÂÃÂ¸ÃÂ±ÃÂºÃÂ°: {e}")
-        return
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+    else:
+        # Нет подписи — сохраняем фото, просим текст
+        context.user_data["pending_photo"] = photo.file_id
+        await update.message.reply_text(
+            "📸 Фото получено!\n\n"
+            "Напиши текст поста или /skip для публикации без текста.\n"
+            "Можно добавить кнопку: [Текст кнопки|https://url.com]"
+        )
 
-    # ÃÂÃÂ½ÃÂ°ÃÂÃÂµ Ã¢ÂÂ ÃÂ¾ÃÂ±ÃÂÃÂÃÂ½ÃÂ°ÃÂ ÃÂ¾ÃÂ±ÃÂÃÂ°ÃÂ±ÃÂ¾ÃÂÃÂºÃÂ° ÃÂÃÂ¾ÃÂÃÂ¾ ÃÂ¾ÃÂ ÃÂºÃÂ»ÃÂ¸ÃÂµÃÂ½ÃÂÃÂ°
-    await handle_photo(update, context)
+
+async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/skip — опубликовать отложенное фото без подписи."""
+    if not is_owner(update.effective_user):
+        return
+    photo_id = context.user_data.pop("pending_photo", None)
+    if not photo_id:
+        await update.message.reply_text("Нет отложенного фото.")
+        return
+    try:
+        msg = await context.bot.send_photo(chat_id=CHANNEL_ID, photo=photo_id)
+        post_link = f"https://t.me/{str(CHANNEL_ID).lstrip('@')}/{msg.message_id}"
+        await update.message.reply_text(f"✅ Пост опубликован без подписи!\n🔗 {post_link}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
 
 
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2406,6 +2482,7 @@ def main():
     app.add_handler(CommandHandler("confirm",   cmd_confirm))
     app.add_handler(CommandHandler("channel",   cmd_channel))
     app.add_handler(CommandHandler("menu",      cmd_menu))
+    app.add_handler(CommandHandler("skip",      cmd_skip))
 
     # ÃÂÃÂµÃÂ´ÃÂ¸ÃÂ° (ÃÂÃÂ¾ÃÂÃÂ¾ ÃÂÃÂ½ÃÂ°ÃÂÃÂ°ÃÂ»ÃÂ° Ã¢ÂÂ ÃÂÃÂÃÂ¾ÃÂ±ÃÂ /post_photo ÃÂ¿ÃÂµÃÂÃÂµÃÂÃÂ²ÃÂ°ÃÂÃÂ¸ÃÂÃÂ)
     app.add_handler(MessageHandler(filters.PHOTO, handle_owner_photo))
