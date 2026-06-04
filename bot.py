@@ -1674,7 +1674,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    load_history_from_amo(user.id)
+    load_history_from_amo(user.id, user.full_name or "")
     result = ask_claude(user.id, text + extra_context)
 
     # ÃÂÃÂÃÂ»ÃÂ¸ ÃÂ²ÃÂ½ÃÂµÃÂÃÂ½ÃÂÃÂ ÃÂÃÂÃÂÃÂ»ÃÂºÃÂ° Ã¢ÂÂ ÃÂÃÂ¸ÃÂÃÂ¾ ÃÂÃÂ¾ÃÂÃÂ²ÃÂ°ÃÂÃÂ´ÃÂ¸ÃÂ¼ ÃÂÃÂµÃÂ±ÃÂµ (ÃÂ±ÃÂµÃÂ· ÃÂÃÂÃÂºÃÂ°ÃÂ»ÃÂ°ÃÂÃÂ¸ÃÂ¸ ÃÂ² ÃÂÃÂ°ÃÂ ÃÂºÃÂ»ÃÂ¸ÃÂµÃÂ½ÃÂÃÂ°)
@@ -1716,7 +1716,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo = update.message.photo[-1]
         image_data = await download_photo(context.bot, photo.file_id)
         prompt = caption if caption else "ÃÂÃÂ»ÃÂ¸ÃÂµÃÂ½ÃÂ ÃÂ¿ÃÂÃÂ¸ÃÂÃÂ»ÃÂ°ÃÂ» ÃÂÃÂ¾ÃÂÃÂ¾ ÃÂÃÂ¾ÃÂ²ÃÂ°ÃÂÃÂ° ÃÂºÃÂ¾ÃÂÃÂ¾ÃÂÃÂÃÂ¹ ÃÂÃÂ¾ÃÂÃÂµÃÂ ÃÂ½ÃÂ°ÃÂ¹ÃÂÃÂ¸ ÃÂ¸ÃÂ»ÃÂ¸ ÃÂºÃÂÃÂ¿ÃÂ¸ÃÂÃÂ. ÃÂÃÂÃÂ²ÃÂµÃÂÃÂ ÃÂÃÂ¾ÃÂ³ÃÂ»ÃÂ°ÃÂÃÂ½ÃÂ¾ ÃÂ¿ÃÂÃÂ°ÃÂ²ÃÂ¸ÃÂ»ÃÂ°ÃÂ¼ ÃÂÃÂ°ÃÂ±ÃÂ¾ÃÂÃÂ ÃÂ ÃÂÃÂ¾ÃÂÃÂ¾."
-        load_history_from_amo(user.id)
+        load_history_from_amo(user.id, user.full_name or "")
         result = ask_claude(user.id, prompt, image_data=image_data)
         # ÃÂ¤ÃÂ¾ÃÂÃÂ¾ ÃÂ¾ÃÂ ÃÂºÃÂ»ÃÂ¸ÃÂµÃÂ½ÃÂÃÂ° ÃÂ²ÃÂÃÂµÃÂ³ÃÂ´ÃÂ° ÃÂÃÂÃÂºÃÂ°ÃÂ»ÃÂ¸ÃÂÃÂÃÂµÃÂ¼ ÃÂ²ÃÂ»ÃÂ°ÃÂ´ÃÂµÃÂ»ÃÂÃÂÃÂ
         result["escalate"] = True
@@ -1746,7 +1746,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prompt += f" ÃÂ ÃÂ¿ÃÂ¾ÃÂ´ÃÂ¿ÃÂ¸ÃÂÃÂÃÂ: {caption}"
     prompt += ". ÃÂÃÂÃÂ²ÃÂµÃÂÃÂ ÃÂºÃÂ°ÃÂº ÃÂ¼ÃÂµÃÂ½ÃÂµÃÂ´ÃÂ¶ÃÂµÃÂ Ã¢ÂÂ ÃÂÃÂÃÂ¾ÃÂÃÂ½ÃÂ¸ ÃÂÃÂÃÂ¾ ÃÂÃÂÃÂ¾ ÃÂ¸ ÃÂºÃÂ°ÃÂº ÃÂ¼ÃÂ¾ÃÂ¶ÃÂµÃÂÃÂ ÃÂ¿ÃÂ¾ÃÂ¼ÃÂ¾ÃÂÃÂ."
 
-    load_history_from_amo(user.id)
+    load_history_from_amo(user.id, user.full_name or "")
     result = ask_claude(user.id, prompt)
     await _send_and_update(update, context, user, result, f"[ÃÂ¤ÃÂÃÂÃÂ] {doc.file_name}")
 
