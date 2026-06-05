@@ -684,10 +684,9 @@ def amo_get_or_create_lead(tg_id: int, contact_id: int, name: str) -> int:
     data = [{
         "name": f"ÃÂÃÂ°ÃÂ¿ÃÂÃÂ¾ÃÂ ÃÂ¾ÃÂ {name}",
         "price": 0,
+        "pipeline_id": 10962146,
         "_embedded": {"contacts": [{"id": contact_id}]}
     }]
-    if pipe_info.get("pipeline_id"):
-        data[0]["pipeline_id"] = pipe_info["pipeline_id"]
     r = amo_request("POST", "leads/complex", data)
     leads = r.get("_embedded", {}).get("leads", [])
     return leads[0]["id"] if leads else 0
@@ -1800,9 +1799,9 @@ async def _send_and_update(update, context, user, result, original_text):
                 for m in history[-6:]
                 if isinstance(m.get('content'), str) and m['content'].strip()
             )
-            interest = result.get("interest") or "ÃÂ½ÃÂµ ÃÂÃÂºÃÂ°ÃÂ·ÃÂ°ÃÂ½"
-            budget = f"{int(result['budget']):,} Ã¢ÂÂ½".replace(",", " ") if result.get("budget") else "ÃÂ½ÃÂµ ÃÂÃÂºÃÂ°ÃÂ·ÃÂ°ÃÂ½"
-            qualification = result.get("qualification") or "ÃÂÃÂ¾ÃÂÃÂÃÂÃÂ¸ÃÂ¹"
+            interest = result.get("interest") or "не указан"
+            budget = f"{int(result['budget']):,} ₽".replace(",", " ") if result.get("budget") else "не указан"
+            qualification = result.get("qualification") or "Горячий"
 
             msg = (
                 "🔥 Горячий лид!\n\n"
