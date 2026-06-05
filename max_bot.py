@@ -181,12 +181,13 @@ async def on_message(event: MessageCreated):
 
     # Фото
     image_data = None
+    photo_url = None
     for att in (getattr(msg, "attachments", []) or []):
         if getattr(att, "type", "") == "image":
             payload = getattr(att, "payload", None)
-            url = getattr(payload, "url", None) if payload else None
-            if url:
-                image_data = await download_image(url)
+            photo_url = getattr(payload, "url", None) if payload else None
+            if photo_url:
+                image_data = await download_image(photo_url)
                 if not text:
                     text = "[ФОТО]"
                 break
@@ -202,7 +203,11 @@ async def on_message(event: MessageCreated):
 
     result = ask_claude(chat_id, text, image_data=image_data)
 
-    sync_to_amo(user_id, name, text, result["reply"],
+    # amoCRM — добавляем URL фото в заметку
+    note_text = text
+    if photo_url:
+        note_text += f"\n📸 Фото: {photo_url}"
+    sync_to_amo(user_id, name, note_text, result["reply"],
                 qualification=result.get("qualification"),
                 interest=result.get("interest"),
                 budget=result.get("budget"))
@@ -213,6 +218,12 @@ async def on_message(event: MessageCreated):
                 chat_id=int(MANAGER_MAX_ID),
                 text=f"🔥 Горячий лид из MAX!\n👤 {name} | ID: {user_id}\n🛋 {result.get('interest') or '—'}\n💬 {text[:200]}"
             )
+            # Форвардим фото менеджеру
+            if photo_url:
+                await bot.send_message(
+                    chat_id=int(MANAGER_MAX_ID),
+                    text=f"📸 Фото от клиента {name}:\n{photo_url}"
+                )
         except Exception as e:
             logger.error(f"Escalation error: {e}")
 
