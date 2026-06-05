@@ -1799,13 +1799,16 @@ async def _send_and_update(update, context, user, result, original_text):
             qualification = result.get("qualification") or "ÃÂÃÂ¾ÃÂÃÂÃÂÃÂ¸ÃÂ¹"
 
             msg = (
-                f"Ã°ÂÂÂ¥ ÃÂÃÂ¾ÃÂÃÂÃÂÃÂ¸ÃÂ¹ ÃÂ»ÃÂ¸ÃÂ´!\n\n"
-                f"Ã°ÂÂÂ¤ ÃÂÃÂ»ÃÂ¸ÃÂµÃÂ½ÃÂ: {user.full_name}\n"
-                f"Ã°ÂÂÂ± TG: @{user.username or 'ÃÂ½ÃÂµÃÂ'} | ID: {user.id}\n"
-                f"Ã°ÂÂÂ ÃÂÃÂ½ÃÂÃÂµÃÂÃÂµÃÂ: {interest}\n"
-                f"Ã°ÂÂÂ° ÃÂÃÂÃÂ´ÃÂ¶ÃÂµÃÂ: {budget}\n"
-                f"Ã°ÂÂÂ ÃÂ¡ÃÂÃÂ°ÃÂÃÂÃÂ: {qualification}\nÃ°ÂÂÂ amoCRM: https://yaninve7.amocrm.ru/leads/detail/{_amo_client_cache.get(user.id, {}).get('lead_id', '?')}\n\n"
-                f"Ã°ÂÂÂ ÃÂÃÂÃÂ¸ÃÂÃÂ¸ÃÂ½ÃÂ°:\n{result.get('reply','')[:200]}\n\nÃ°ÂÂÂ¬ ÃÂÃÂ¸ÃÂ°ÃÂ»ÃÂ¾ÃÂ³:\n{dialog_summary}"
+                "🔥 Горячий лид!\n\n"
+                f"👤 Клиент: {user.full_name}\n"
+                f"📱 TG: @{user.username or 'нет'} | ID: {user.id}\n"
+                f"🛋 Интерес: {interest}\n"
+                f"💰 Бюджет: {budget}\n"
+                f"🏷 Статус: {qualification}\n"
+                f"📎 amoCRM: https://yaninve7.amocrm.ru/leads/detail/"
+                f"{_amo_client_cache.get(user.id, {}).get('lead_id', '?')}\n\n"
+                f"📝 Ответ Юли:\n{result.get('reply','')[:200]}\n\n"
+                f"💬 Диалог:\n{dialog_summary}"
             )
             await context.bot.send_message(
                 chat_id=int(MANAGER_CHAT_ID),
