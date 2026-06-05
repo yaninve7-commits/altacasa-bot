@@ -1515,7 +1515,7 @@ def detect_owner_intent(text: str) -> str | None:
 
 
 
-def load_history_from_amo(tg_id: int) -> bool:
+def load_history_from_amo(tg_id: int, name: str = "") -> bool:
     """ÃÂÃÂ°ÃÂ³ÃÂÃÂÃÂ·ÃÂ¸ÃÂÃÂ ÃÂ¸ÃÂÃÂÃÂ¾ÃÂÃÂ¸ÃÂ ÃÂ´ÃÂ¸ÃÂ°ÃÂ»ÃÂ¾ÃÂ³ÃÂ° ÃÂ¸ÃÂ· amoCRM ÃÂ¿ÃÂÃÂ¸ ÃÂÃÂµÃÂÃÂÃÂ°ÃÂÃÂÃÂµ ÃÂ±ÃÂ¾ÃÂÃÂ°."""
     if tg_id in dialogs and dialogs[tg_id]:
         return False
