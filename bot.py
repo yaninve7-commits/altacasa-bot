@@ -739,38 +739,65 @@ def amo_move_pipeline(lead_id: int, qualification: str, interest: str = None, bu
 def sync_to_amo(tg_id: int, name: str, username: str,
                 message_text: str, bot_reply: str,
                 qualification: str = None, interest: str = None, budget: int = None):
-    """Синхронизация диалога с amoCRM — пишем в контакт."""
+    """Синхронизация диалога с amoCRM.
+    Все клиенты → контакт + сделка в воронке Продажи.
+    Стадии: Новый лид → Квалификация → Подбор товара → КП отправлено.
+    """
     if not AMO_TOKEN:
         return
+
+    # Маппинг квалификации → название стадии в воронке
+    QUAL_TO_STAGE = {
+        None:                   "новый лид",
+        "Холодный":             "новый лид",
+        "Тёплый":               "квалификация",
+        "Горячий":              "подбор товара",
+        "Передан менеджеру":    "кп отправлено",
+    }
+
     try:
-        # Получаем или создаём контакт
+        # ── Контакт ──────────────────────────────────────────────────────
         if tg_id not in _amo_client_cache:
             contact_id = amo_get_or_create_contact(tg_id, name, username)
             if not contact_id:
                 return
-            _amo_client_cache[tg_id] = {"contact_id": contact_id, "lead_id": 0}
-            _save_amo_map(tg_id, contact_id, 0)
+            lead_name = f"{name} — {interest}" if interest else f"Запрос от {name}"
+            lead_id = amo_get_or_create_lead(tg_id, contact_id, lead_name)
+            _amo_client_cache[tg_id] = {"contact_id": contact_id, "lead_id": lead_id}
+            _save_amo_map(tg_id, contact_id, lead_id)
         else:
             contact_id = _amo_client_cache[tg_id].get("contact_id", 0)
+            lead_id    = _amo_client_cache[tg_id].get("lead_id", 0)
             if not contact_id:
                 return
 
-        # Пишем переписку в заметку контакта
-        note = f"👤 {name}: {message_text}\n🤖 Юля: {bot_reply[:300]}"
-        if interest:
-            note += f"\n🛋 Интерес: {interest}"
-        if budget:
-            note += f"\n💰 Бюджет: {budget:,} ₽".replace(",", " ")
-        if qualification:
-            note += f"\n🏷 Статус: {qualification}"
+        # ── Двигаем сделку по воронке ─────────────────────────────────────
+        if lead_id and qualification:
+            stage_name = QUAL_TO_STAGE.get(qualification)
+            if stage_name:
+                pipe_info = amo_get_pipeline_statuses()
+                statuses = pipe_info.get("statuses", {})
+                status_id = next(
+                    (sid for sname, sid in statuses.items() if stage_name in sname.lower()),
+                    None
+                )
+                if status_id:
+                    amo_request("PATCH", "leads", [{"id": lead_id, "status_id": status_id}])
+                    if budget:
+                        amo_request("PATCH", "leads", [{"id": lead_id, "price": budget}])
 
-        amo_request("POST", "contacts/notes", [{
-            "entity_id": contact_id,
-            "note_type": "common",
-            "params": {"text": note}
-        }])
+        # ── Заметка с перепиской → в сделку ──────────────────────────────
+        if lead_id:
+            note = f"👤 {name}: {message_text}\n🤖 Юля: {bot_reply[:300]}"
+            if interest:
+                note += f"\n🛋 Интерес: {interest}"
+            if budget:
+                note += f"\n💰 Бюджет: {budget:,} ₽".replace(",", " ")
+            if qualification:
+                note += f"\n🏷 Статус: {qualification}"
+            amo_add_note(lead_id, note)
 
-        logger.info(f"amoCRM sync: tg={tg_id} contact={contact_id} qual={qualification}")
+        logger.info(f"amoCRM sync: tg={tg_id} lead={lead_id} qual={qualification}")
     except Exception as e:
         logger.error(f"amoCRM sync error: {e}")
 
