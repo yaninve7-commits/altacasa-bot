@@ -739,51 +739,38 @@ def amo_move_pipeline(lead_id: int, qualification: str, interest: str = None, bu
 def sync_to_amo(tg_id: int, name: str, username: str,
                 message_text: str, bot_reply: str,
                 qualification: str = None, interest: str = None, budget: int = None):
-    """ÃÂÃÂ»ÃÂ°ÃÂ²ÃÂ½ÃÂ°ÃÂ ÃÂÃÂÃÂ½ÃÂºÃÂÃÂ¸ÃÂ ÃÂÃÂ¸ÃÂ½ÃÂÃÂÃÂ¾ÃÂ½ÃÂ¸ÃÂ·ÃÂ°ÃÂÃÂ¸ÃÂ¸ ÃÂ´ÃÂ¸ÃÂ°ÃÂ»ÃÂ¾ÃÂ³ÃÂ° ÃÂ amoCRM."""
+    """Синхронизация диалога с amoCRM — пишем в контакт."""
     if not AMO_TOKEN:
         return
-
     try:
-        # ÃÂÃÂ¾ÃÂ»ÃÂÃÂÃÂ°ÃÂµÃÂ¼ ÃÂ¸ÃÂ· ÃÂºÃÂµÃÂÃÂ° ÃÂ¸ÃÂ»ÃÂ¸ ÃÂÃÂ¾ÃÂ·ÃÂ´ÃÂ°ÃÂÃÂ¼
+        # Получаем или создаём контакт
         if tg_id not in _amo_client_cache:
             contact_id = amo_get_or_create_contact(tg_id, name, username)
             if not contact_id:
                 return
-
-            # ÃÂÃÂ»ÃÂ ÃÂ³ÃÂ¾ÃÂÃÂÃÂÃÂµÃÂ³ÃÂ¾ ÃÂ»ÃÂ¸ÃÂ´ÃÂ° Ã¢ÂÂ ÃÂÃÂ¾ÃÂ·ÃÂ´ÃÂ°ÃÂÃÂ¼ ÃÂ¸ÃÂ¼ÃÂµÃÂ½ÃÂ¾ÃÂ²ÃÂ°ÃÂ½ÃÂ½ÃÂÃÂ ÃÂÃÂ´ÃÂµÃÂ»ÃÂºÃÂ
-            if qualification == "ÃÂÃÂ¾ÃÂÃÂÃÂÃÂ¸ÃÂ¹" and interest:
-                lead_name = f"{name} Ã¢ÂÂ {interest}"
-            else:
-                lead_name = f"ÃÂÃÂ°ÃÂ¿ÃÂÃÂ¾ÃÂ ÃÂ¾ÃÂ {name}"
-
-            lead_id = amo_get_or_create_lead(tg_id, contact_id, lead_name)
-            _amo_client_cache[tg_id] = {"contact_id": contact_id, "lead_id": lead_id}
-            _save_amo_map(tg_id, contact_id, lead_id)  # ÃÂ¿ÃÂµÃÂÃÂÃÂ¸ÃÂÃÂÃÂµÃÂ½ÃÂÃÂ½ÃÂ¾
+            _amo_client_cache[tg_id] = {"contact_id": contact_id, "lead_id": 0}
+            _save_amo_map(tg_id, contact_id, 0)
         else:
-            lead_id = _amo_client_cache[tg_id].get("lead_id", 0)
+            contact_id = _amo_client_cache[tg_id].get("contact_id", 0)
+            if not contact_id:
+                return
 
-            # ÃÂÃÂ±ÃÂ½ÃÂ¾ÃÂ²ÃÂ»ÃÂÃÂµÃÂ¼ ÃÂ½ÃÂ°ÃÂ·ÃÂ²ÃÂ°ÃÂ½ÃÂ¸ÃÂµ ÃÂÃÂ´ÃÂµÃÂ»ÃÂºÃÂ¸ ÃÂµÃÂÃÂ»ÃÂ¸ ÃÂÃÂÃÂ°ÃÂ» ÃÂ³ÃÂ¾ÃÂÃÂÃÂÃÂ¸ÃÂ¼
-            if qualification == "ÃÂÃÂ¾ÃÂÃÂÃÂÃÂ¸ÃÂ¹" and interest and lead_id:
-                amo_request("PATCH", "leads", [{"id": lead_id, "name": f"{name} Ã¢ÂÂ {interest}"}])
-
-        if not lead_id:
-            return
-
-        # ÃÂÃÂ¾ÃÂ±ÃÂ°ÃÂ²ÃÂ»ÃÂÃÂµÃÂ¼ ÃÂÃÂ¾ÃÂ¾ÃÂ±ÃÂÃÂµÃÂ½ÃÂ¸ÃÂµ ÃÂºÃÂ»ÃÂ¸ÃÂµÃÂ½ÃÂÃÂ° ÃÂºÃÂ°ÃÂº ÃÂºÃÂ¾ÃÂ¼ÃÂ¼ÃÂµÃÂ½ÃÂÃÂ°ÃÂÃÂ¸ÃÂ¹
-        note = f"Ã°ÂÂÂ¤ {name}: {message_text}\nÃ°ÂÂ¤Â ÃÂ®ÃÂ»ÃÂ: {bot_reply[:300]}"
+        # Пишем переписку в заметку контакта
+        note = f"👤 {name}: {message_text}\n🤖 Юля: {bot_reply[:300]}"
         if interest:
-            note += f"\nÃ°ÂÂÂ¦ ÃÂÃÂ½ÃÂÃÂµÃÂÃÂµÃÂ: {interest}"
+            note += f"\n🛋 Интерес: {interest}"
         if budget:
-            note += f"\nÃ°ÂÂÂ° ÃÂÃÂÃÂ´ÃÂ¶ÃÂµÃÂ: {budget:,} Ã¢ÂÂ½".replace(",", " ")
+            note += f"\n💰 Бюджет: {budget:,} ₽".replace(",", " ")
         if qualification:
-            note += f"\nÃ°ÂÂÂ ÃÂ¡ÃÂÃÂ°ÃÂÃÂÃÂ: {qualification}"
-        amo_add_note(lead_id, note)
+            note += f"\n🏷 Статус: {qualification}"
 
-        # ÃÂÃÂ²ÃÂ¸ÃÂ³ÃÂ°ÃÂµÃÂ¼ ÃÂ¿ÃÂ¾ ÃÂ²ÃÂ¾ÃÂÃÂ¾ÃÂ½ÃÂºÃÂµ + ÃÂ¾ÃÂ±ÃÂ½ÃÂ¾ÃÂ²ÃÂ»ÃÂÃÂµÃÂ¼ ÃÂÃÂÃÂ¼ÃÂ¼ÃÂ ÃÂµÃÂÃÂ»ÃÂ¸ ÃÂ¸ÃÂ·ÃÂ²ÃÂµÃÂÃÂÃÂµÃÂ½ ÃÂ±ÃÂÃÂ´ÃÂ¶ÃÂµÃÂ
-        if qualification in ("ÃÂÃÂ¾ÃÂÃÂÃÂÃÂ¸ÃÂ¹", "ÃÂÃÂµÃÂÃÂµÃÂ´ÃÂ°ÃÂ½ ÃÂ¼ÃÂµÃÂ½ÃÂµÃÂ´ÃÂ¶ÃÂµÃÂÃÂ"):
-            amo_move_pipeline(lead_id, qualification, interest, budget)
+        amo_request("POST", "contacts/notes", [{
+            "entity_id": contact_id,
+            "note_type": "common",
+            "params": {"text": note}
+        }])
 
-        logger.info(f"amoCRM sync: tg={tg_id} lead={lead_id} qual={qualification}")
+        logger.info(f"amoCRM sync: tg={tg_id} contact={contact_id} qual={qualification}")
     except Exception as e:
         logger.error(f"amoCRM sync error: {e}")
 
