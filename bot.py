@@ -1795,7 +1795,7 @@ async def _send_and_update(update, context, user, result, original_text):
                 return text.strip()[:150]
 
             dialog_summary = "\n".join(
-                f"{'Ã°ÂÂÂ¤' if m['role'] == 'user' else 'Ã°ÂÂ¤Â'} {clean_msg(m['content']) if isinstance(m['content'], str) else '[ÃÂ¼ÃÂµÃÂ´ÃÂ¸ÃÂ°]'}"
+                f"{'👤' if m['role'] == 'user' else '🤖'} {clean_msg(m['content']) if isinstance(m['content'], str) else '[media]'}"
                 for m in history[-6:]
                 if isinstance(m.get('content'), str) and m['content'].strip()
             )
