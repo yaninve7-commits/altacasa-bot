@@ -524,14 +524,20 @@ def amo_request(method: str, path: str, data: dict = None) -> dict:
 
 def amo_get_pipeline_statuses() -> dict:
     """ÃÂÃÂ¾ÃÂ»ÃÂÃÂÃÂ¸ÃÂÃÂ ID ÃÂÃÂÃÂ°ÃÂÃÂÃÂÃÂ¾ÃÂ² ÃÂ¸ÃÂ· ÃÂ¿ÃÂµÃÂÃÂ²ÃÂ¾ÃÂ¹ ÃÂ²ÃÂ¾ÃÂÃÂ¾ÃÂ½ÃÂºÃÂ¸."""
-    r = amo_request("GET", "leads/pipelines")
-    pipelines = r.get("_embedded", {}).get("pipelines", [])
-    if not pipelines:
+    TARGET_PIPELINE_ID = 10962146  # Воронка "Продажи"
+    r = amo_request("GET", f"leads/pipelines/{TARGET_PIPELINE_ID}")
+    pipeline = r if r.get("id") else {}
+    if not pipeline:
+        # Fallback: берём первую воронку
+        r2 = amo_request("GET", "leads/pipelines")
+        pipelines = r2.get("_embedded", {}).get("pipelines", [])
+        pipeline = pipelines[0] if pipelines else {}
+    if not pipeline:
         return {}
     statuses = {}
-    for s in pipelines[0].get("_embedded", {}).get("statuses", []):
+    for s in pipeline.get("_embedded", {}).get("statuses", []):
         statuses[s["name"].lower()] = s["id"]
-    return {"pipeline_id": pipelines[0]["id"], "statuses": statuses}
+    return {"pipeline_id": pipeline["id"], "statuses": statuses}
 
 
 def director_update_deal(deal_id: int, status: str = None, price: int = None, note: str = None) -> dict:
