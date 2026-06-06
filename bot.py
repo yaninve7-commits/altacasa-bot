@@ -1138,6 +1138,21 @@ def ask_claude(chat_id: int, user_message: str, image_data: dict = None, extra_s
     return result
 
 
+def detect_media_type(b: bytes) -> str:
+    """Определить реальный MIME-тип картинки по сигнатуре байтов."""
+    if not b:
+        return "image/jpeg"
+    if b[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if b[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if b[:4] == b"RIFF" and b[8:12] == b"WEBP":
+        return "image/webp"
+    if b[:4] in (b"GIF8",):
+        return "image/gif"
+    return "image/jpeg"
+
+
 async def download_photo(bot, file_id: str) -> dict:
     """Скачать фото из Telegram и вернуть base64."""
     file = await bot.get_file(file_id)
@@ -1145,7 +1160,7 @@ async def download_photo(bot, file_id: str) -> dict:
     async with httpx.AsyncClient() as client:
         resp = await client.get(url)
     data = base64.standard_b64encode(resp.content).decode()
-    return {"data": data, "media_type": "image/jpeg"}
+    return {"data": data, "media_type": detect_media_type(resp.content)}
 
 
 def analyze_product_photo(image_data: dict, caption: str = "") -> str:

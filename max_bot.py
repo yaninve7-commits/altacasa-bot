@@ -120,11 +120,25 @@ async def download_image(url):
         logger.error(f"Image download error: {e}")
         return None
 
+def detect_media_type(b: bytes) -> str:
+    """Определить реальный MIME-тип картинки по сигнатуре байтов."""
+    if not b:
+        return "image/jpeg"
+    if b[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if b[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if b[:4] == b"RIFF" and b[8:12] == b"WEBP":
+        return "image/webp"
+    if b[:4] in (b"GIF8",):
+        return "image/gif"
+    return "image/jpeg"
+
 def ask_claude(chat_id, user_message, image_data=None):
     history = dialogs.get(chat_id, [])
     if image_data:
         content = [
-            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+            {"type": "image", "source": {"type": "base64", "media_type": detect_media_type(image_data),
              "data": base64.standard_b64encode(image_data).decode()}},
             {"type": "text", "text": user_message or "Клиент прислал фото товара. Ответь согласно правилам работы с фото."}
         ]
@@ -175,7 +189,7 @@ def analyze_product_photo(image_bytes, caption=""):
             "Только то, что реально видно на фото. Не выдумывай размеры и бренд. Без вступлений и воды."
         )
         content = [
-            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+            {"type": "image", "source": {"type": "base64", "media_type": detect_media_type(image_bytes),
              "data": base64.standard_b64encode(image_bytes).decode()}},
             {"type": "text", "text": (f"Подпись клиента: {caption}\n" if caption else "") + "Опиши товар для поиска."},
         ]
@@ -266,7 +280,14 @@ async def on_message(event: MessageCreated):
         await event.message.answer("✅ Получено")
         return
 
-    result = ask_claude(chat_id, text, image_data=image_data)
+    # Всё, что ниже — в защите: ошибка с одним сообщением (например фото)
+    # НЕ должна ронять polling и заставлять Юлю замолчать.
+    try:
+        result = ask_claude(chat_id, text, image_data=image_data)
+    except Exception as e:
+        logger.error(f"[MAX] ask_claude error: {e}", exc_info=True)
+        result = {"reply": "Спасибо, получила! Уточните, пожалуйста, что именно вас интересует — подберём вариант.",
+                  "qualification": None, "interest": None, "budget": None, "escalate": bool(image_data)}
 
     # Vision-анализ товара для внутренней команды + фото всегда эскалируем
     analysis = ""
@@ -280,12 +301,15 @@ async def on_message(event: MessageCreated):
         note_text += f"\n📸 Фото: {photo_url}"
     if analysis:
         note_text += f"\n\n🔎 Что на фото (для поиска):\n{analysis}"
-    sync_to_amo(user_id, name, note_text, result["reply"],
-                qualification=result.get("qualification"),
-                interest=result.get("interest"),
-                budget=result.get("budget"))
+    try:
+        sync_to_amo(user_id, name, note_text, result["reply"],
+                    qualification=result.get("qualification"),
+                    interest=result.get("interest"),
+                    budget=result.get("budget"))
+    except Exception as e:
+        logger.error(f"[MAX] amoCRM sync error: {e}")
 
-    if result["escalate"] and MANAGER_MAX_ID:
+    if result.get("escalate") and MANAGER_MAX_ID:
         try:
             lead_msg = f"🔥 Горячий лид из MAX!\n👤 {name} | ID: {user_id}\n🛋 {result.get('interest') or '—'}\n💬 {text[:200]}"
             if analysis:
@@ -300,7 +324,10 @@ async def on_message(event: MessageCreated):
         except Exception as e:
             logger.error(f"Escalation error: {e}")
 
-    await msg.answer(result["reply"])
+    try:
+        await msg.answer(result["reply"])
+    except Exception as e:
+        logger.error(f"[MAX] answer error: {e}")
 
 async def main():
     await bot.delete_webhook()
