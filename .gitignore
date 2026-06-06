@@ -1,2 +1,7 @@
 .env
 .env.example
+__pycache__/
+*.pyc
+*.bak
+bot_backup.py
+amo_id_map.json
