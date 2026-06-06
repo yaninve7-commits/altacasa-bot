@@ -157,6 +157,39 @@ def ask_claude(chat_id, user_message, image_data=None):
             pass
     return result
 
+def analyze_product_photo(image_bytes, caption=""):
+    """Vision-анализ фото товара ДЛЯ ВНУТРЕННЕЙ КОМАНДЫ — что искать у поставщиков."""
+    if not image_bytes:
+        return ""
+    try:
+        sys = (
+            "Ты эксперт по мебели и предметам интерьера из Китая. "
+            "На фото — товар, который клиент хочет найти или купить. "
+            "Опиши его КРАТКО для внутренней команды закупки KOKAHOUSE, чтобы они нашли "
+            "аналог у китайских поставщиков (1688, Taobao, Alibaba). Формат:\n"
+            "• Тип: (диван / стул / стол / кровать / светильник / декор / ...)\n"
+            "• Стиль: (модерн / лофт / классика / минимализм / ...)\n"
+            "• Материал и цвет:\n"
+            "• Особенности: (форма, ножки, обивка, фурнитура, заметные детали)\n"
+            "• Ключевые слова для поиска (рус + англ или кит): 3–5 шт\n"
+            "Только то, что реально видно на фото. Не выдумывай размеры и бренд. Без вступлений и воды."
+        )
+        content = [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+             "data": base64.standard_b64encode(image_bytes).decode()}},
+            {"type": "text", "text": (f"Подпись клиента: {caption}\n" if caption else "") + "Опиши товар для поиска."},
+        ]
+        resp = ai.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=400,
+            system=sys,
+            messages=[{"role": "user", "content": content}],
+        )
+        return resp.content[0].text.strip()
+    except Exception as e:
+        logger.error(f"Photo analysis error: {e}")
+        return ""
+
 @dp.bot_started()
 async def on_start(event: BotStarted):
     dialogs[event.chat_id] = []
@@ -235,10 +268,18 @@ async def on_message(event: MessageCreated):
 
     result = ask_claude(chat_id, text, image_data=image_data)
 
-    # amoCRM — добавляем URL фото в заметку
+    # Vision-анализ товара для внутренней команды + фото всегда эскалируем
+    analysis = ""
+    if image_data:
+        analysis = analyze_product_photo(image_data, text if text != "[ФОТО]" else "")
+        result["escalate"] = True
+
+    # amoCRM — добавляем URL фото и анализ в заметку
     note_text = text
     if photo_url:
         note_text += f"\n📸 Фото: {photo_url}"
+    if analysis:
+        note_text += f"\n\n🔎 Что на фото (для поиска):\n{analysis}"
     sync_to_amo(user_id, name, note_text, result["reply"],
                 qualification=result.get("qualification"),
                 interest=result.get("interest"),
@@ -246,10 +287,10 @@ async def on_message(event: MessageCreated):
 
     if result["escalate"] and MANAGER_MAX_ID:
         try:
-            await bot.send_message(
-                chat_id=int(MANAGER_MAX_ID),
-                text=f"🔥 Горячий лид из MAX!\n👤 {name} | ID: {user_id}\n🛋 {result.get('interest') or '—'}\n💬 {text[:200]}"
-            )
+            lead_msg = f"🔥 Горячий лид из MAX!\n👤 {name} | ID: {user_id}\n🛋 {result.get('interest') or '—'}\n💬 {text[:200]}"
+            if analysis:
+                lead_msg += f"\n\n🔎 Что на фото (для поиска):\n{analysis}"
+            await bot.send_message(chat_id=int(MANAGER_MAX_ID), text=lead_msg)
             # Форвардим фото менеджеру
             if photo_url:
                 await bot.send_message(

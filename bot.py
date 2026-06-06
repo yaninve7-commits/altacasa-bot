@@ -1148,6 +1148,41 @@ async def download_photo(bot, file_id: str) -> dict:
     return {"data": data, "media_type": "image/jpeg"}
 
 
+def analyze_product_photo(image_data: dict, caption: str = "") -> str:
+    """Vision-анализ фото товара ДЛЯ ВНУТРЕННЕЙ КОМАНДЫ — что искать у поставщиков."""
+    if not image_data:
+        return ""
+    try:
+        sys = (
+            "Ты эксперт по мебели и предметам интерьера из Китая. "
+            "На фото — товар, который клиент хочет найти или купить. "
+            "Опиши его КРАТКО для внутренней команды закупки KOKAHOUSE, чтобы они нашли "
+            "аналог у китайских поставщиков (1688, Taobao, Alibaba). Формат:\n"
+            "• Тип: (диван / стул / стол / кровать / светильник / декор / ...)\n"
+            "• Стиль: (модерн / лофт / классика / минимализм / ...)\n"
+            "• Материал и цвет:\n"
+            "• Особенности: (форма, ножки, обивка, фурнитура, заметные детали)\n"
+            "• Ключевые слова для поиска (рус + англ или кит): 3–5 шт\n"
+            "Только то, что реально видно на фото. Не выдумывай размеры и бренд. Без вступлений и воды."
+        )
+        content = [
+            {"type": "image", "source": {"type": "base64",
+                                         "media_type": image_data["media_type"],
+                                         "data": image_data["data"]}},
+            {"type": "text", "text": (f"Подпись клиента: {caption}\n" if caption else "") + "Опиши товар для поиска."},
+        ]
+        resp = ai.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=400,
+            system=sys,
+            messages=[{"role": "user", "content": content}],
+        )
+        return resp.content[0].text.strip()
+    except Exception as e:
+        logger.error(f"Photo analysis error: {e}")
+        return ""
+
+
 # ── Каталог товаров (для deep links с сайта) ─────────────────────────────────
 PRODUCTS = {
     # Диваны
@@ -1621,12 +1656,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prompt = caption if caption else "Клиент прислал фото товара который хочет найти или купить. Ответь согласно правилам работы с фото."
         load_history_from_amo(user.id, user.full_name or "")
         result = ask_claude(user.id, prompt, image_data=image_data)
+        # Vision-анализ товара для внутренней команды (что искать у поставщиков)
+        result["photo_analysis"] = analyze_product_photo(image_data, caption)
         # Фото от клиента всегда эскалируем владельцу
         result["escalate"] = True
     except Exception as e:
         logger.error(f"Photo processing error: {e}")
         result = {"reply": "Получила ваше фото! Уточните, что именно вас интересует?",
-                  "qualification": None, "interest": None, "budget": None, "escalate": False}
+                  "qualification": None, "interest": None, "budget": None,
+                  "escalate": True, "photo_analysis": ""}
 
     await _send_and_update(update, context, user, result, f"[ФОТО] {caption}")
 
@@ -1676,6 +1714,10 @@ async def _send_and_update(update, context, user, result, original_text):
             budget = f"{int(result['budget']):,} ₽".replace(",", " ") if result.get("budget") else "не указан"
             qualification = result.get("qualification") or "Горячий"
 
+            photo_block = ""
+            if result.get("photo_analysis"):
+                photo_block = f"\n🔎 Что на фото (для поиска):\n{result['photo_analysis']}\n"
+
             msg = (
                 "🔥 Горячий лид!\n\n"
                 f"👤 Клиент: {user.full_name}\n"
@@ -1684,7 +1726,8 @@ async def _send_and_update(update, context, user, result, original_text):
                 f"💰 Бюджет: {budget}\n"
                 f"🏷 Статус: {qualification}\n"
                 f"📎 amoCRM: https://yaninve7.amocrm.ru/leads/detail/"
-                f"{_amo_client_cache.get(user.id, {}).get('lead_id', '?')}\n\n"
+                f"{_amo_client_cache.get(user.id, {}).get('lead_id', '?')}\n"
+                f"{photo_block}\n"
                 f"📝 Ответ Юли:\n{result.get('reply','')[:200]}\n\n"
                 f"💬 Диалог:\n{dialog_summary}"
             )
@@ -1696,10 +1739,15 @@ async def _send_and_update(update, context, user, result, original_text):
             if update.message.photo:
                 photo = update.message.photo[-1]
                 caption_text = update.message.caption or ""
+                photo_caption = f"📸 Фото от клиента {user.full_name}"
+                if caption_text:
+                    photo_caption += f"\nПодпись: {caption_text}"
+                if result.get("photo_analysis"):
+                    photo_caption += f"\n\n🔎 {result['photo_analysis']}"
                 await context.bot.send_photo(
                     chat_id=int(MANAGER_CHAT_ID),
                     photo=photo.file_id,
-                    caption=f"📸 Фото от клиента {user.full_name}" + (f"\nПодпись: {caption_text}" if caption_text else "")
+                    caption=photo_caption[:1024]
                 )
             # Помечаем что уже уведомили — не будем спамить
             _escalated_clients.add(user.id)
@@ -1711,11 +1759,14 @@ async def _send_and_update(update, context, user, result, original_text):
     # Синхронизация с amoCRM
     if not is_owner(user):
         try:
+            amo_message = original_text[:500]
+            if result.get("photo_analysis"):
+                amo_message = (original_text + "\n\n🔎 Что на фото (для поиска):\n" + result["photo_analysis"])[:1500]
             sync_to_amo(
                 tg_id=user.id,
                 name=user.full_name or "Клиент",
                 username=user.username or "",
-                message_text=original_text[:500],
+                message_text=amo_message,
                 bot_reply=result["reply"][:500],
                 qualification=result.get("qualification"),
                 interest=result.get("interest"),
