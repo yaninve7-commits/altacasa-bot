@@ -179,13 +179,35 @@ async def on_message(event: MessageCreated):
     user_id = user.user_id
     name    = f"{user.first_name or ''} {user.last_name or ''}".strip() or "Клиент"
 
+    # DEBUG: дамп структуры сообщения
+    try:
+        body_attrs = {k: str(getattr(msg.body, k, None))[:100] for k in dir(msg.body) if not k.startswith('_')} if msg.body else {}
+        msg_attrs = {k: str(getattr(msg, k, None))[:100] for k in ['attachments', 'link', 'body'] if hasattr(msg, k)}
+        logger.info(f"[MAX DEBUG] msg attrs: {msg_attrs}")
+        logger.info(f"[MAX DEBUG] body attrs: {body_attrs}")
+    except Exception as de:
+        logger.info(f"[MAX DEBUG] error: {de}")
+
     # Фото
     image_data = None
     photo_url = None
-    for att in (getattr(msg, "attachments", []) or []):
-        if getattr(att, "type", "") == "image":
+    attachments = getattr(msg, "attachments", []) or []
+    # Также проверяем body.attachments
+    if not attachments and msg.body:
+        attachments = getattr(msg.body, "attachments", []) or []
+    if attachments:
+        logger.info(f"[MAX] attachments count={len(attachments)}, types={[getattr(a,'type','?') for a in attachments]}")
+    for att in attachments:
+        att_type = getattr(att, "type", "") or ""
+        logger.info(f"[MAX] attachment type={att_type} payload={getattr(att,'payload',None)}")
+        # MAX может слать image, photo, или другие типы
+        if att_type in ("image", "photo", "sticker"):
             payload = getattr(att, "payload", None)
-            photo_url = getattr(payload, "url", None) if payload else None
+            photo_url = (
+                getattr(payload, "url", None) or
+                getattr(payload, "photo_url", None) or
+                getattr(payload, "thumbnail_url", None)
+            ) if payload else None
             if photo_url:
                 image_data = await download_image(photo_url)
                 if not text:
