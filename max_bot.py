@@ -196,18 +196,28 @@ async def on_message(event: MessageCreated):
     if not attachments and msg.body:
         attachments = getattr(msg.body, "attachments", []) or []
     if attachments:
-        logger.info(f"[MAX] attachments count={len(attachments)}, types={[getattr(a,'type','?') for a in attachments]}")
+        logger.info(f"[MAX] attachments count={len(attachments)}")
     for att in attachments:
-        att_type = getattr(att, "type", "") or ""
-        logger.info(f"[MAX] attachment type={att_type} payload={getattr(att,'payload',None)}")
-        # MAX может слать image, photo, или другие типы
-        if att_type in ("image", "photo", "sticker"):
-            payload = getattr(att, "payload", None)
+        att_type = str(getattr(att, "type", "") or "")
+        logger.info(f"[MAX] att={att!r} type={att_type}")
+        # Image(type='i') — тип может быть 'image', 'i', или объект enum
+        is_image = (
+            "image" in att_type.lower() or
+            att_type == "i" or
+            type(att).__name__ == "Image" or
+            hasattr(att, "url") or
+            hasattr(att, "payload")
+        )
+        if is_image:
+            # Пробуем разные места для URL
             photo_url = (
-                getattr(payload, "url", None) or
-                getattr(payload, "photo_url", None) or
-                getattr(payload, "thumbnail_url", None)
-            ) if payload else None
+                getattr(att, "url", None) or
+                getattr(att, "photo_url", None) or
+                getattr(getattr(att, "payload", None), "url", None) or
+                getattr(getattr(att, "payload", None), "photo_url", None) or
+                getattr(getattr(att, "payload", None), "thumbnail_url", None)
+            )
+            logger.info(f"[MAX] photo_url={photo_url}")
             if photo_url:
                 image_data = await download_image(photo_url)
                 if not text:
