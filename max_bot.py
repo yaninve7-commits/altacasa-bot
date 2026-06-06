@@ -70,32 +70,83 @@ def amo_request(method, path, data=None):
         logger.error(f"amoCRM {method} {path}: {e}")
         return {}
 
-def amo_get_or_create_contact(user_id, name):
+# Персистентный маппинг MAX user_id -> {contact_id, lead_id}
+MAX_MAP_FILE = "max_amo_map.json"
+
+def _load_max_map():
+    if os.path.exists(MAX_MAP_FILE):
+        try:
+            with open(MAX_MAP_FILE) as f:
+                return {int(k): v for k, v in json.load(f).items()}
+        except Exception:
+            pass
+    return {}
+
+def _save_max_map(user_id, contact_id, lead_id):
+    data = _load_max_map()
+    data[user_id] = {"contact_id": contact_id, "lead_id": lead_id}
+    try:
+        with open(MAX_MAP_FILE, "w") as f:
+            json.dump({str(k): v for k, v in data.items()}, f)
+    except Exception as e:
+        logger.error(f"max_amo_map save error: {e}")
+
+_max_map = _load_max_map()
+
+def amo_get_or_create_contact(user_id, name, username=""):
+    # 1) персистентный маппинг
+    if user_id in _max_map and _max_map[user_id].get("contact_id"):
+        return _max_map[user_id]["contact_id"]
     if user_id in _amo_cache:
         return _amo_cache[user_id]
-    params = urllib.parse.urlencode({"query": name, "limit": 5})
-    r = amo_request("GET", f"contacts?{params}")
-    for c in r.get("_embedded", {}).get("contacts", []):
-        if c.get("name") == name:
-            _amo_cache[user_id] = c["id"]
-            return c["id"]
-    r = amo_request("POST", "contacts", [{"name": name}])
+    # 2) поиск в amoCRM (по username — он уникальнее имени)
+    key = username or name
+    if key:
+        params = urllib.parse.urlencode({"query": key, "limit": 5})
+        r = amo_request("GET", f"contacts?{params}")
+        for c in r.get("_embedded", {}).get("contacts", []):
+            cn = c.get("name", "")
+            if (username and f"@{username}" in cn) or (not username and cn == name):
+                _amo_cache[user_id] = c["id"]
+                return c["id"]
+    # 3) создаём контакт — username прямо в имени (видно в карточке и ищется)
+    contact_name = f"{name} (@{username})" if username else name
+    r = amo_request("POST", "contacts", [{"name": contact_name}])
     contacts = r.get("_embedded", {}).get("contacts", [])
     if not contacts:
         return 0
     cid = contacts[0]["id"]
-    amo_request("POST", "contacts/notes", [{"entity_id": cid, "note_type": "common", "params": {"text": f"MAX ID: {user_id}"}}])
+    reach = f"📱 Клиент из MAX\nИмя: {name}\n"
+    if username:
+        reach += f"Username: @{username}\n"
+    reach += f"MAX ID: {user_id}\nКак связаться: ответить через бота Юлю или найти @{username} в MAX." if username \
+             else f"MAX ID: {user_id}\nКак связаться: ответить клиенту через бота Юлю."
+    amo_request("POST", "contacts/notes", [{"entity_id": cid, "note_type": "common", "params": {"text": reach}}])
     _amo_cache[user_id] = cid
-    logger.info(f"amoCRM MAX: контакт {name} id={cid}")
+    logger.info(f"amoCRM MAX: контакт {contact_name} id={cid}")
     return cid
 
-def sync_to_amo(user_id, name, message_text, bot_reply, qualification=None, interest=None, budget=None):
+def amo_get_or_create_lead(user_id, contact_id, name):
+    if user_id in _max_map and _max_map[user_id].get("lead_id"):
+        return _max_map[user_id]["lead_id"]
+    payload = [{"name": f"MAX: {name}", "_embedded": {"contacts": [{"id": contact_id}]}}]
+    r = amo_request("POST", "leads", payload)
+    leads = r.get("_embedded", {}).get("leads", [])
+    lead_id = leads[0]["id"] if leads else 0
+    _save_max_map(user_id, contact_id, lead_id)
+    if lead_id:
+        logger.info(f"amoCRM MAX: сделка {lead_id} для {name}")
+    return lead_id
+
+def sync_to_amo(user_id, name, message_text, bot_reply, qualification=None, interest=None, budget=None, username=""):
     if not AMO_TOKEN:
         return
     try:
-        cid = amo_get_or_create_contact(user_id, name)
+        cid = amo_get_or_create_contact(user_id, name, username)
         if not cid:
+            logger.error(f"amoCRM MAX: не удалось создать контакт для {name} ({user_id})")
             return
+        lead_id = amo_get_or_create_lead(user_id, cid, name)
         note = f"👤 {name}: {message_text}\n🤖 Юля: {bot_reply[:300]}"
         if interest:
             note += f"\n🛋 Интерес: {interest}"
@@ -103,8 +154,12 @@ def sync_to_amo(user_id, name, message_text, bot_reply, qualification=None, inte
             note += f"\n💰 Бюджет: {budget:,} р.".replace(",", " ")
         if qualification:
             note += f"\n🏷 Статус: {qualification}"
-        amo_request("POST", "contacts/notes", [{"entity_id": cid, "note_type": "common", "params": {"text": note}}])
-        logger.info(f"amoCRM MAX sync: user={user_id} contact={cid}")
+        # заметку вешаем на сделку (если создана), иначе на контакт
+        if lead_id:
+            amo_request("POST", "leads/notes", [{"entity_id": lead_id, "note_type": "common", "params": {"text": note}}])
+        else:
+            amo_request("POST", "contacts/notes", [{"entity_id": cid, "note_type": "common", "params": {"text": note}}])
+        logger.info(f"amoCRM MAX sync: user={user_id} contact={cid} lead={lead_id}")
     except Exception as e:
         logger.error(f"amoCRM MAX sync error: {e}")
 
@@ -225,6 +280,7 @@ async def on_message(event: MessageCreated):
     user    = msg.sender
     user_id = user.user_id
     name    = f"{user.first_name or ''} {user.last_name or ''}".strip() or "Клиент"
+    username = getattr(user, "username", "") or ""
 
     # Фото
     image_data = None
@@ -292,13 +348,17 @@ async def on_message(event: MessageCreated):
         sync_to_amo(user_id, name, note_text, result["reply"],
                     qualification=result.get("qualification"),
                     interest=result.get("interest"),
-                    budget=result.get("budget"))
+                    budget=result.get("budget"),
+                    username=username)
     except Exception as e:
         logger.error(f"[MAX] amoCRM sync error: {e}")
 
     if result.get("escalate") and MANAGER_MAX_ID:
         try:
-            lead_msg = f"🔥 Горячий лид из MAX!\n👤 {name} | ID: {user_id}\n🛋 {result.get('interest') or '—'}\n💬 {text[:200]}"
+            contact_line = f"👤 {name}"
+            if username:
+                contact_line += f" (@{username})"
+            lead_msg = f"🔥 Горячий лид из MAX!\n{contact_line}\n📱 MAX ID: {user_id}\n🛋 {result.get('interest') or '—'}\n💬 {text[:200]}"
             if analysis:
                 lead_msg += f"\n\n🔎 Что на фото (для поиска):\n{analysis}"
             await bot.send_message(chat_id=int(MANAGER_MAX_ID), text=lead_msg)

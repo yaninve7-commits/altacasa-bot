@@ -5,3 +5,4 @@ __pycache__/
 *.bak
 bot_backup.py
 amo_id_map.json
+max_amo_map.json
