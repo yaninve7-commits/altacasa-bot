@@ -1,6 +1,6 @@
 python-telegram-bot>=21.6
 anthropic>=0.28.0
 python-dotenv>=1.0.0
-maxapi
+maxapi==0.9.18
 apscheduler>=3.10.0
 reportlab>=4.0.0
