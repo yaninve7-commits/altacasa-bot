@@ -129,6 +129,16 @@ def amo_get_or_create_contact(user_id, name, username=""):
 def amo_get_or_create_lead(user_id, contact_id, name):
     if user_id in _max_map and _max_map[user_id].get("lead_id"):
         return _max_map[user_id]["lead_id"]
+    # После рестарта маппинг пуст — ищем уже существующую сделку контакта,
+    # чтобы не плодить дубли и подцепить историю.
+    r = amo_request("GET", f"contacts/{contact_id}?with=leads")
+    existing = ((r.get("_embedded", {}) or {}).get("leads", []) if isinstance(r, dict) else [])
+    if existing:
+        lead_id = existing[0].get("id", 0)
+        if lead_id:
+            _save_max_map(user_id, contact_id, lead_id)
+            return lead_id
+    # Иначе создаём новую сделку
     payload = [{"name": f"MAX: {name}", "_embedded": {"contacts": [{"id": contact_id}]}}]
     r = amo_request("POST", "leads", payload)
     leads = r.get("_embedded", {}).get("leads", [])
@@ -137,6 +147,37 @@ def amo_get_or_create_lead(user_id, contact_id, name):
     if lead_id:
         logger.info(f"amoCRM MAX: сделка {lead_id} для {name}")
     return lead_id
+
+def load_history_from_amo(user_id, chat_id):
+    """Восстановить историю диалога из заметок сделки amoCRM (после рестарта бота)."""
+    if dialogs.get(chat_id):
+        return
+    info = _max_map.get(user_id)
+    lead_id = info.get("lead_id") if info else 0
+    if not lead_id:
+        return
+    try:
+        r = amo_request("GET", f"leads/{lead_id}/notes?limit=30&order[id]=desc")
+        notes = r.get("_embedded", {}).get("notes", [])
+        history = []
+        for note in reversed(notes):
+            txt = (note.get("params", {}) or {}).get("text", "")
+            if not txt:
+                continue
+            for line in txt.strip().split("\n"):
+                if "👤" in line[:5] and ": " in line:
+                    c = line.split(": ", 1)[1].strip()
+                    if c:
+                        history.append({"role": "user", "content": c})
+                elif "🤖 Юля: " in line[:12]:
+                    c = line.split("Юля: ", 1)[-1].strip()
+                    if c:
+                        history.append({"role": "assistant", "content": c})
+        if history:
+            dialogs[chat_id] = history[-MAX_HISTORY:]
+            logger.info(f"[MAX] история из amoCRM для {user_id}: {len(history)} сообщений")
+    except Exception as e:
+        logger.error(f"[MAX] load_history error: {e}")
 
 def sync_to_amo(user_id, name, message_text, bot_reply, qualification=None, interest=None, budget=None, username=""):
     if not AMO_TOKEN:
@@ -326,6 +367,16 @@ async def on_message(event: MessageCreated):
     # Всё, что ниже — в защите: ошибка с одним сообщением (например фото)
     # НЕ должна ронять polling и заставлять Юлю замолчать.
     try:
+        # Память: если in-memory история пуста (рестарт бота) — восстанавливаем
+        # её из заметок сделки amoCRM, чтобы Юля помнила клиента.
+        if AMO_TOKEN and not dialogs.get(chat_id):
+            try:
+                cid = amo_get_or_create_contact(user_id, name, username)
+                if cid:
+                    amo_get_or_create_lead(user_id, cid, name)
+                    load_history_from_amo(user_id, chat_id)
+            except Exception as he:
+                logger.error(f"[MAX] history restore error: {he}")
         result = ask_claude(chat_id, text, image_data=image_data)
     except Exception as e:
         logger.error(f"[MAX] ask_claude error: {e}", exc_info=True)
